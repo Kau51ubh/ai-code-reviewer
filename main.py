@@ -38,7 +38,7 @@ def get_changed_files(repo, base_branch, head_branch, token):
     return target_files
 
 def review_code_with_gemini(filename, code):
-    """Sends the code to Gemini for review with dynamic, file-specific rules."""
+    """Sends the code to Gemini for review with strict conditional rules."""
     
     # 1. Base instructions that apply to EVERY file
     base_instructions = f"""
@@ -50,6 +50,16 @@ def review_code_with_gemini(filename, code):
     2. Identify bad practices and suggest best practices.
     3. Suggest optimizations for performance and easier ways to write this.
     4. Provide the fully refactored and updated code.
+    
+    CRITICAL REPORTING INSTRUCTIONS:
+    - If a specific rule or check is NOT applicable to the provided code, YOU MUST NOT mention it. Never write "Not applicable".
+    - DO NOT invent or inject new columns (like ETL_BATCH_SK), new tables, or new business logic that do not exist in the original code. Only fix and refactor what is already there.
+
+    CRITICAL FORMATTING INSTRUCTION:
+    You MUST format the "Review Comments" section using structured Markdown. 
+    Group your findings under appropriate H3 subheadings (e.g., `### 🚨 Rule Violations`, `### ❌ Syntax Errors`, `### 💡 Optimizations`).
+    Use bullet points (`*`) for every individual comment.
+    Use **bold text** to highlight the specific issue name.
     """
     
     # 2. Dynamic specific rules based on file name
@@ -58,20 +68,22 @@ def review_code_with_gemini(filename, code):
     if filename.endswith('_BQ_INSERTS.sql'):
         specific_instructions = """
     Specific Rules for _BQ_INSERTS.sql Files:
-    - BigQuery datasets MUST be parameterized (e.g., hardcoded DB_AEDWD2 must become ${AEDW_DB}).
-    - Ensure DATETIME functions are used instead of TIMESTAMP to avoid timezone conflicts.
-    - Ensure the SQL has the ETL_BATCH_SK column parameterized (e.g., ${ETL_BATCH_SK}).
-    - Environments MUST NOT be hardcoded in any file paths (e.g., /load/dev2/subjectarea must become /load/${env}/subjectarea).
-    - Multiple INSERT statements for a single table are NOT allowed. It must be refactored to one INSERT statement followed by multiple VALUES.
+    - Target Column List: ALL `INSERT` statements (both VALUES and SELECT types) MUST explicitly define the target column list (e.g., `INSERT INTO table_name (col1, col2)`). Implicit column ordering is strictly forbidden. Report this if missing and add placeholders/derived columns in the updated code.
+    - BigQuery Datasets: IF a dataset name is hardcoded (e.g., DB_AEDWD2), it MUST be parameterized (e.g., ${AEDW_DB}).
+    - DATETIME vs TIMESTAMP: IF `TIMESTAMP` functions are used, replace them with `DATETIME` functions.
+    - ETL_BATCH_SK: IF the `ETL_BATCH_SK` column is already present in the original query, it MUST be parameterized as `${ETL_BATCH_SK}`. DO NOT add this column if it is missing from the original code.
+    - Environments: IF environment paths are present in the code, they MUST be parameterized (e.g., /load/dev2/ becomes /load/${env}/).
+    - Multiple INSERTs: Multiple `INSERT` statements for a single table are NOT allowed. Consolidate into one `INSERT` statement followed by multiple `VALUES` rows.
     """
     
     elif filename.endswith('.sql'):
         specific_instructions = """
     Specific Rules for standard .sql Files:
-    - BigQuery datasets MUST be parameterized (e.g., hardcoded DB_AEDWD2 must become ${AEDW_DB}).
-    - Ensure DATETIME functions are used instead of TIMESTAMP to avoid timezone conflicts.
-    - Ensure the SQL has the ETL_BATCH_SK column parameterized (e.g., ${ETL_BATCH_SK}).
-    - Ensure thorough checks for query optimization, join performance, and general SQL best practices.
+    - Target Column List: IF the file contains `INSERT` statements, they MUST explicitly define the target column list (e.g., `INSERT INTO table_name (col1, col2)`). Implicit column ordering is strictly forbidden.
+    - BigQuery Datasets: IF a dataset name is hardcoded, it MUST be parameterized (e.g., ${AEDW_DB}).
+    - DATETIME vs TIMESTAMP: IF `TIMESTAMP` functions are used, replace them with `DATETIME` functions.
+    - ETL_BATCH_SK: IF the `ETL_BATCH_SK` column is already present in the original query, it MUST be parameterized as `${ETL_BATCH_SK}`. DO NOT add this column if it is missing from the original code.
+    - Optimization: Ensure thorough checks for query optimization, join performance, and general SQL best practices.
     """
     
     elif filename.endswith('_INTERFACE_VM.py'):
@@ -86,7 +98,7 @@ def review_code_with_gemini(filename, code):
     elif filename.endswith('.ksh'):
         specific_instructions = """
     Specific Rules for .ksh Shell Scripts:
-    - Ensure any SQL datasets referenced in the script are properly parameterized.
+    - IF SQL datasets are referenced, ensure they are parameterized.
     - ALL commands must have valid Return Code (RC) checks (e.g., checking `$?`) to capture errors immediately.
     - Robust error handling and exiting must be present.
     - Direct `bq query` commands MUST NOT be used. They should be refactored to use designated wrapper functions instead.
