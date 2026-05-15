@@ -77,6 +77,7 @@ def review_code_with_gemini(filename, code):
     - Target Column List: ALL `INSERT` statements (both VALUES and SELECT types) MUST explicitly define the target column list (e.g., `INSERT INTO table_name (col1, col2)`). Implicit column ordering is strictly forbidden. Report this if missing and add placeholders/derived columns in the updated code.
     - BigQuery Datasets: IF a dataset name is hardcoded (e.g., DB_AEDWD2), it MUST be parameterized (e.g., ${AEDW_DB}).
     - DATETIME vs TIMESTAMP: IF `TIMESTAMP` functions are used, replace them with `DATETIME` functions.
+    - Filter should be required while updating and deleting data from any table. if delete or update is present.
     - ETL_BATCH_SK: IF the `ETL_BATCH_SK` column is already present in the original query, it MUST be parameterized as `${ETL_BATCH_SK}`. DO NOT add this column if it is missing from the original code.
     - Environments: IF environment paths are present in the code, they MUST be parameterized (e.g., /load/dev2/ becomes /load/${env}/).
     - Multiple INSERTs: Multiple `INSERT` statements for a single table are NOT allowed. Consolidate into one `INSERT` statement followed by multiple `VALUES` rows.
@@ -87,6 +88,7 @@ def review_code_with_gemini(filename, code):
     Specific Rules for standard .sql Files:
     - Target Column List: IF the file contains `INSERT` statements, they MUST explicitly define the target column list (e.g., `INSERT INTO table_name (col1, col2)`). Implicit column ordering is strictly forbidden.
     - BigQuery Datasets: IF a dataset name is hardcoded, it MUST be parameterized (e.g., ${AEDW_DB}).
+    - Filter should be required while updating and deleting data from any table. if delete or update is present.
     - DATETIME vs TIMESTAMP: IF `TIMESTAMP` functions are used, replace them with `DATETIME` functions.
     - ETL_BATCH_SK: IF the `ETL_BATCH_SK` column is already present in the original query, it MUST be parameterized as `${ETL_BATCH_SK}`. DO NOT add this column if it is missing from the original code.
     - Optimization: Ensure thorough checks for query optimization, join performance, and general SQL best practices.
