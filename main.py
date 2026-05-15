@@ -1,4 +1,5 @@
 import os
+import time  # <--- ADDED THIS for execution tracking
 import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS # <--- ADD THIS
@@ -25,7 +26,7 @@ def get_changed_files(repo, base_branch, head_branch, token):
     target_files = []
     
     for file in files_data:
-        # Only process added or modified files that are SQL or KSH
+        # Only process added or modified files that are SQL, KSH, or INTERFACE_VM.py
         if file['status'] in ['added', 'modified'] and (file['filename'].endswith(('.sql', '.ksh')) or file['filename'].endswith('_INTERFACE_VM.py')):
             # Fetch the raw content of the new file
             raw_url = file['raw_url']
@@ -38,7 +39,11 @@ def get_changed_files(repo, base_branch, head_branch, token):
     return target_files
 
 def review_code_with_gemini(filename, code):
-    """Sends the code to Gemini for review with strict conditional rules."""
+    """Sends the code to Gemini for review with strict conditional rules and line number tracking."""
+    
+    # Pre-process code to add line numbers (e.g., "001 | SELECT *")
+    code_lines = code.split('\n')
+    numbered_code = '\n'.join([f"{i+1:03d} | {line}" for i, line in enumerate(code_lines)])
     
     # 1. Base instructions that apply to EVERY file
     base_instructions = f"""
@@ -49,9 +54,10 @@ def review_code_with_gemini(filename, code):
     1. Check for syntax errors.
     2. Identify bad practices and suggest best practices.
     3. Suggest optimizations for performance and easier ways to write this.
-    4. Provide the fully refactored and updated code.
+    4. Provide the fully refactored and updated code (Provide the updated code clean, WITHOUT line numbers).
     
     CRITICAL REPORTING INSTRUCTIONS:
+    - LINE NUMBERS: The code provided below is prefixed with line numbers (e.g., `001 | `). Whenever you report an issue, syntax error, or violation, you MUST cite the exact line number(s) where the issue occurs (e.g., "Line 004", "Lines 012-015").
     - If a specific rule or check is NOT applicable to the provided code, YOU MUST NOT mention it. Never write "Not applicable".
     - DO NOT invent or inject new columns (like ETL_BATCH_SK), new tables, or new business logic that do not exist in the original code. Only fix and refactor what is already there.
 
@@ -59,10 +65,10 @@ def review_code_with_gemini(filename, code):
     You MUST format the "Review Comments" section using structured Markdown. 
     Group your findings under appropriate H3 subheadings (e.g., `### 🚨 Rule Violations`, `### ❌ Syntax Errors`, `### 💡 Optimizations`).
     Use bullet points (`*`) for every individual comment.
-    Use **bold text** to highlight the specific issue name.
+    Use **bold text** to highlight the specific issue name and line number citation. Example: "* **Hardcoded Dataset (Line 003):** ..."
     """
     
-    # 2. Dynamic specific rules based on file name
+    #  2. Dynamic specific rules based on file name
     specific_instructions = ""
     
     if filename.endswith('_BQ_INSERTS.sql'):
@@ -115,14 +121,15 @@ def review_code_with_gemini(filename, code):
     
     Format your response clearly with headings for "Review Comments" and "Updated Code".
     
-    Code to review:
+    Code to review (with original line numbers):
     ```
-    {code}
+    {numbered_code}
     ```
     """
     
+    # Return the entire response object so we can read the token metadata
     response = model.generate_content(prompt)
-    return response.text
+    return response
 
 @app.route('/review', methods=['POST'])
 def run_review():
@@ -138,11 +145,14 @@ def run_review():
         return jsonify({"error": "Missing 'repo' or 'branch' in payload."}), 400
 
     try:
+        start_time = time.time()  # <--- START THE CLOCK
+        total_tokens = 0          # <--- INITIALIZE TOKEN COUNTER
+        
         # 1. Fetch changed files from GitHub
         files_to_review = get_changed_files(repo, base_branch, head_branch, github_token)
         
         if not files_to_review:
-            return jsonify({"message": "No .sql or .ksh files were added or modified."}), 200
+            return jsonify({"message": "No .sql, .ksh, or _INTERFACE_VM.py files were added or modified."}), 200
             
         results = {}
         
@@ -150,14 +160,31 @@ def run_review():
         for file_obj in files_to_review:
             filename = file_obj['filename']
             code = file_obj['content']
-            review_feedback = review_code_with_gemini(filename, code)
-            results[filename] = review_feedback
+            
+            # Fetch the full response object
+            response_obj = review_code_with_gemini(filename, code)
+            
+            # Store the text for the frontend
+            results[filename] = response_obj.text
+            
+            # Safely extract token counts
+            try:
+                total_tokens += response_obj.usage_metadata.total_token_count
+            except AttributeError:
+                pass
+                
+        end_time = time.time()  # <--- STOP THE CLOCK
+        time_taken = round(end_time - start_time, 2)
             
         return jsonify({
             "status": "success",
             "repository": repo,
             "branch": head_branch,
-            "reviews": results
+            "reviews": results,
+            "stats": {            # <--- ADD STATS PAYLOAD
+                "time_taken": time_taken,
+                "total_tokens": total_tokens
+            }
         }), 200
 
     except Exception as e:
@@ -165,4 +192,3 @@ def run_review():
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-
