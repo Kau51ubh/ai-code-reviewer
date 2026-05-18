@@ -1,0 +1,7 @@
+Specific Rules for .ksh Shell Scripts:
+- Parameterization: IF SQL datasets are referenced, ensure they are parameterized.
+- Error Handling: ALL commands must have valid Return Code (RC) checks (e.g., checking `$?`) to capture errors immediately. Robust error handling and exiting must be present.
+- BigQuery Operations: Direct `bq query` commands MUST NOT be used. They should be refactored to use designated wrapper functions instead.
+- Optimization: Ensure the script avoids huge local/unix file processing (advise offloading to the database or cloud storage).
+- Data Retention: Ensure files are being actively archived wherever applicable in the flow.
+- STRICT SECURITY CHECK: Ensure that passwords or secrets are not printed or echo'd anywhere in the code.
