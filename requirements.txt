@@ -1,0 +1,4 @@
+Flask>=3.0.3
+requests>=2.31.0
+google-cloud-aiplatform>=1.49.0
+flask-cors>=4.0.0
