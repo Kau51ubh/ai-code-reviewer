@@ -185,7 +185,7 @@
             </div>
             <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
                 <div class="p-2 bg-emerald-50 text-emerald-600 rounded-lg"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div>
-                <div><p class="text-xs text-slate-500 font-semibold uppercase tracking-wider">Status</p><p class="text-lg font-bold text-emerald-600">Success</p></div>
+                <div><p class="text-xs text-slate-500 font-semibold uppercase tracking-wider">Status</p><p class="text-lg font-bold text-emerald-600">Complete</p></div>
             </div>
         </div>
 
@@ -231,17 +231,17 @@
             }, 2500);
         }
 
-        // --- NEW: Accordion Toggle Function ---
+        // Accordion Toggle Function
         window.toggleAccordion = function(contentId, iconId) {
             const content = document.getElementById(contentId);
             const icon = document.getElementById(iconId);
             
             if (content.classList.contains('hidden')) {
                 content.classList.remove('hidden');
-                icon.classList.add('rotate-180'); // Point arrow UP
+                icon.classList.add('rotate-180'); 
             } else {
                 content.classList.add('hidden');
-                icon.classList.remove('rotate-180'); // Point arrow DOWN
+                icon.classList.remove('rotate-180'); 
             }
         };
 
@@ -320,51 +320,79 @@
             
             for (const [filename, markdownContent] of Object.entries(reviews)) {
                 
+                // --- FIX: Remove accidental full-response markdown wrappers ---
+                // If Gemini wraps the entire response inside ```markdown ... ```, we strip it out
+                // so it doesn't render as one giant code block.
+                let cleanContent = markdownContent.trim();
+                const fullBlockMatch = cleanContent.match(/^```[a-z]*\n([\s\S]*)\n```$/i);
+                if (fullBlockMatch) {
+                    cleanContent = fullBlockMatch[1].trim();
+                }
+
+                // File Type Badges
                 const isKsh = filename.endsWith('.ksh');
                 const isSql = filename.endsWith('.sql');
                 const isPy = filename.endsWith('.py');
                 
-                let badgeStyle = '';
-                let borderStyle = '';
-                
-                if (isSql) {
-                    badgeStyle = 'bg-blue-50 text-blue-700 border border-blue-200';
-                    borderStyle = 'border-l-4 border-l-blue-500';
-                } else if (isKsh) {
-                    badgeStyle = 'bg-slate-100 text-slate-700 border border-slate-300';
-                    borderStyle = 'border-l-4 border-l-slate-500';
-                } else if (isPy) {
-                    badgeStyle = 'bg-amber-50 text-amber-700 border border-amber-200';
-                    borderStyle = 'border-l-4 border-l-amber-500';
+                let fileBadgeStyle = '';
+                if (isSql) fileBadgeStyle = 'bg-blue-50 text-blue-700 border border-blue-200';
+                else if (isKsh) fileBadgeStyle = 'bg-slate-100 text-slate-700 border border-slate-300';
+                else if (isPy) fileBadgeStyle = 'bg-amber-50 text-amber-700 border border-amber-200';
+
+                // --- DYNAMIC STATUS BADGE LOGIC ---
+                const contentLower = cleanContent.toLowerCase();
+                let statusBadgeHtml = '';
+                let borderColor = 'border-slate-200'; 
+
+                if (contentLower.includes('syntax error') || contentLower.includes('rule violation') || cleanContent.includes('❌') || cleanContent.includes('🚨')) {
+                    borderColor = 'border-l-4 border-l-red-500';
+                    statusBadgeHtml = `
+                        <div class="hidden md:flex items-center text-red-600 bg-red-50 px-3 py-1 rounded-full border border-red-100 shadow-sm">
+                            <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                            <span class="text-xs font-bold uppercase tracking-wide">Issues Detected</span>
+                        </div>
+                    `;
+                } else if (contentLower.includes('optimization') || contentLower.includes('bad practice') || cleanContent.includes('💡')) {
+                    borderColor = 'border-l-4 border-l-amber-500';
+                    statusBadgeHtml = `
+                        <div class="hidden md:flex items-center text-amber-600 bg-amber-50 px-3 py-1 rounded-full border border-amber-100 shadow-sm">
+                            <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                            <span class="text-xs font-bold uppercase tracking-wide">Needs Optimization</span>
+                        </div>
+                    `;
+                } else {
+                    borderColor = 'border-l-4 border-l-emerald-500';
+                    statusBadgeHtml = `
+                        <div class="hidden md:flex items-center text-emerald-600 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100 shadow-sm">
+                            <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <span class="text-xs font-bold uppercase tracking-wide">Clean Code</span>
+                        </div>
+                    `;
                 }
 
-                // Generate unique IDs for the accordion functionality
                 const safeId = filename.replace(/[^a-zA-Z0-9]/g, '-');
                 const contentId = `content-${safeId}`;
                 const iconId = `icon-${safeId}`;
 
                 const cardHtml = `
-                    <div class="bg-white rounded-2xl shadow-sm overflow-hidden border border-slate-200 ${borderStyle}">
+                    <div class="bg-white rounded-2xl shadow-sm overflow-hidden border ${borderColor}">
                         <div onclick="toggleAccordion('${contentId}', '${iconId}')" class="bg-slate-50/50 hover:bg-slate-100/70 cursor-pointer border-b border-slate-100 px-6 md:px-8 py-5 flex items-center justify-between transition-colors group">
                             
                             <div class="flex items-center gap-3 pointer-events-none">
-                                <span class="${badgeStyle} font-bold text-xs px-2.5 py-1 rounded-md font-mono uppercase tracking-wide">${filename.split('.').pop()}</span>
+                                <span class="${fileBadgeStyle} font-bold text-xs px-2.5 py-1 rounded-md font-mono uppercase tracking-wide">${filename.split('.').pop()}</span>
                                 <h3 class="font-mono text-lg font-bold text-slate-800 tracking-tight">${filename}</h3>
                             </div>
                             
                             <div class="flex items-center gap-4 pointer-events-none">
-                                <div class="hidden md:flex items-center text-green-600 bg-green-50 px-3 py-1 rounded-full border border-green-100">
-                                    <svg class="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                                    <span class="text-xs font-bold uppercase tracking-wide">Analysis Complete</span>
-                                </div>
-                                <div class="p-1 rounded-full bg-slate-100 group-hover:bg-slate-200 transition-colors text-slate-400 group-hover:text-slate-600">
+                                ${statusBadgeHtml}
+                                <div class="p-1 rounded-full bg-white shadow-sm border border-slate-200 group-hover:bg-slate-200 transition-colors text-slate-500">
                                     <svg id="${iconId}" class="w-5 h-5 transform transition-transform duration-200 rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                                 </div>
                             </div>
                         </div>
                         
                         <div id="${contentId}" class="p-6 md:p-8 markdown-body">
-                            ${marked.parse(markdownContent)}
+                            ${marked.parse(cleanContent)}
                         </div>
                     </div>
                 `;
@@ -383,7 +411,7 @@
                 btn.innerHTML = `<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg> Copy`;
                 
                 btn.addEventListener('click', async (e) => {
-                    e.stopPropagation(); // Prevent accordion toggle when clicking copy
+                    e.stopPropagation(); 
                     const code = block.querySelector('code').innerText;
                     await navigator.clipboard.writeText(code);
                     const originalHtml = btn.innerHTML;
