@@ -1,0 +1,5 @@
+Specific Rules for _INTERFACE_VM.py DAG Files:
+- Naming Convention: The DAG ID MUST end with 'INTERFACE_VM'.
+- Catchup Parameter: Ensure `catchup=False` is explicitly set.
+- Active Runs: Ensure `max_active_runs=1` is set, or ensure it is completely omitted to fall back to the default.
+- Execution Method: Ensure these DAGs strictly use `gcloud ssh` commands along with appropriate user/host/other variables.
