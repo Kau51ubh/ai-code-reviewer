@@ -1,21 +1,29 @@
 import os
-import time  # <--- ADDED THIS for execution tracking
+import time  
 import requests
 from flask import Flask, request, jsonify
-from flask_cors import CORS # <--- ADD THIS
+from flask_cors import CORS 
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
 app = Flask(__name__)
-CORS(app) # <--- ADD THIS to enable browser requests
+CORS(app) 
 
 # Ensure Vertex AI is initialized using the environment's project context
-# Cloud Run automatically provides default credentials
 vertexai.init(location="us-central1") 
-model = GenerativeModel("gemini-2.5-flash") # Current stable, cost-effective model
+model = GenerativeModel("gemini-2.5-flash")
+
+def load_rules_from_file(filepath):
+    """Helper function to read external rule files gracefully."""
+    try:
+        with open(filepath, 'r') as file:
+            return file.read()
+    except FileNotFoundError:
+        print(f"Warning: Configuration file {filepath} not found. Skipping those specific rules.")
+        return ""
 
 def get_changed_files(repo, base_branch, head_branch, token):
-    """Uses GitHub API to compare branches and get changed .sql/.ksh files."""
+    """Uses GitHub API to compare branches and get changed files."""
     headers = {'Authorization': f'token {token}'} if token else {}
     compare_url = f"https://api.github.com/repos/{repo}/compare/{base_branch}...{head_branch}"
     
@@ -26,9 +34,7 @@ def get_changed_files(repo, base_branch, head_branch, token):
     target_files = []
     
     for file in files_data:
-        # Only process added or modified files that are SQL, KSH, or INTERFACE_VM.py
         if file['status'] in ['added', 'modified'] and (file['filename'].endswith(('.sql', '.ksh')) or file['filename'].endswith('_INTERFACE_VM.py')):
-            # Fetch the raw content of the new file
             raw_url = file['raw_url']
             raw_response = requests.get(raw_url, headers=headers)
             target_files.append({
@@ -39,13 +45,11 @@ def get_changed_files(repo, base_branch, head_branch, token):
     return target_files
 
 def review_code_with_gemini(filename, code):
-    """Sends the code to Gemini for review with strict conditional rules and line number tracking."""
+    """Sends the code to Gemini for review using externally loaded rules."""
     
-    # Pre-process code to add line numbers (e.g., "001 | SELECT *")
     code_lines = code.split('\n')
     numbered_code = '\n'.join([f"{i+1:03d} | {line}" for i, line in enumerate(code_lines)])
     
-    # 1. Base instructions that apply to EVERY file
     base_instructions = f"""
     You are an expert Senior Data Engineer and Code Reviewer. 
     Please review the following file: `{filename}`.
@@ -68,54 +72,16 @@ def review_code_with_gemini(filename, code):
     Use **bold text** to highlight the specific issue name and line number citation. Example: "* **Hardcoded Dataset (Line 003):** ..."
     """
     
-    #  2. Dynamic specific rules based on file name
+    # Dynamically load specific instructions from external text files
     specific_instructions = ""
     
-    if filename.endswith('_BQ_INSERTS.sql'):
-        specific_instructions = """
-    Specific Rules for _BQ_INSERTS.sql Files:
-    - Target Column List: ALL `INSERT` statements (both VALUES and SELECT types) MUST explicitly define the target column list (e.g., `INSERT INTO table_name (col1, col2)`). Implicit column ordering is strictly forbidden. Report this if missing and add placeholders/derived columns in the updated code.
-    - BigQuery Datasets: IF a dataset name is hardcoded (e.g., DB_AEDWD2), it MUST be parameterized (e.g., ${AEDW_DB}).
-    - DATETIME vs TIMESTAMP: IF `TIMESTAMP` functions are used, replace them with `DATETIME` functions.
-    - Filter should be required while updating and deleting data from any table. if delete or update is present.
-    - ETL_BATCH_SK: IF the `ETL_BATCH_SK` column is already present in the original query, it MUST be parameterized as `${ETL_BATCH_SK}`. DO NOT add this column if it is missing from the original code.
-    - Environments: IF environment paths are present in the code, they MUST be parameterized (e.g., /load/dev2/ becomes /load/${env}/).
-    - Multiple INSERTs: Multiple `INSERT` statements for a single table are NOT allowed. Consolidate into one `INSERT` statement followed by multiple `VALUES` rows.
-    """
-    
-    elif filename.endswith('.sql'):
-        specific_instructions = """
-    Specific Rules for standard .sql Files:
-    - Target Column List: IF the file contains `INSERT` statements, they MUST explicitly define the target column list (e.g., `INSERT INTO table_name (col1, col2)`). Implicit column ordering is strictly forbidden.
-    - BigQuery Datasets: IF a dataset name is hardcoded, it MUST be parameterized (e.g., ${AEDW_DB}).
-    - Filter should be required while updating and deleting data from any table. if delete or update is present.
-    - DATETIME vs TIMESTAMP: IF `TIMESTAMP` functions are used, replace them with `DATETIME` functions.
-    - ETL_BATCH_SK: IF the `ETL_BATCH_SK` column is already present in the original query, it MUST be parameterized as `${ETL_BATCH_SK}`. DO NOT add this column if it is missing from the original code.
-    - Optimization: Ensure thorough checks for query optimization, join performance, and general SQL best practices.
-    """
-    
+    if filename.endswith('.sql'):
+        specific_instructions = load_rules_from_file('rules_sql.txt')
     elif filename.endswith('_INTERFACE_VM.py'):
-        specific_instructions = """
-    Specific Rules for _INTERFACE_VM.py DAG Files:
-    - The DAG ID MUST end with 'INTERFACE_VM'.
-    - Ensure `catchup=False` is explicitly set.
-    - Ensure `max_active_runs=1` is set, or ensure it is completely omitted to fall back to the default.
-    - Ensure these DAGs strictly use `gcloud ssh` commands along with appropriate user/host/other variables.
-    """
-    
+        specific_instructions = load_rules_from_file('rules_py.txt')
     elif filename.endswith('.ksh'):
-        specific_instructions = """
-    Specific Rules for .ksh Shell Scripts:
-    - IF SQL datasets are referenced, ensure they are parameterized.
-    - ALL commands must have valid Return Code (RC) checks (e.g., checking `$?`) to capture errors immediately.
-    - Robust error handling and exiting must be present.
-    - Direct `bq query` commands MUST NOT be used. They should be refactored to use designated wrapper functions instead.
-    - Ensure the script avoids huge local/unix file processing (advise offloading to the database or cloud storage).
-    - Ensure files are being actively archived wherever applicable in the flow.
-    - STRICT SECURITY CHECK: Ensure that passwords or secrets are not printed or echo'd anywhere in the code.
-    """
+        specific_instructions = load_rules_from_file('rules_ksh.txt')
 
-    # 3. Assemble the final prompt
     prompt = f"""
     {base_instructions}
     
@@ -129,7 +95,6 @@ def review_code_with_gemini(filename, code):
     ```
     """
     
-    # Return the entire response object so we can read the token metadata
     response = model.generate_content(prompt)
     return response
 
@@ -137,9 +102,9 @@ def review_code_with_gemini(filename, code):
 def run_review():
     data = request.get_json()
     
-    repo = data.get('repo')                 # e.g., "your-username/sql-ksh-reviewer"
-    head_branch = data.get('branch')        # e.g., "release-v1"
-    base_branch = data.get('base_branch', 'master') # defaults to master
+    repo = data.get('repo')
+    head_branch = data.get('branch')
+    base_branch = data.get('base_branch', 'main')
     
     github_token = os.environ.get("GITHUB_TOKEN")
     
@@ -147,10 +112,9 @@ def run_review():
         return jsonify({"error": "Missing 'repo' or 'branch' in payload."}), 400
 
     try:
-        start_time = time.time()  # <--- START THE CLOCK
-        total_tokens = 0          # <--- INITIALIZE TOKEN COUNTER
+        start_time = time.time()
+        total_tokens = 0
         
-        # 1. Fetch changed files from GitHub
         files_to_review = get_changed_files(repo, base_branch, head_branch, github_token)
         
         if not files_to_review:
@@ -158,24 +122,19 @@ def run_review():
             
         results = {}
         
-        # 2. Process each file with Gemini
         for file_obj in files_to_review:
             filename = file_obj['filename']
             code = file_obj['content']
             
-            # Fetch the full response object
             response_obj = review_code_with_gemini(filename, code)
-            
-            # Store the text for the frontend
             results[filename] = response_obj.text
             
-            # Safely extract token counts
             try:
                 total_tokens += response_obj.usage_metadata.total_token_count
             except AttributeError:
                 pass
                 
-        end_time = time.time()  # <--- STOP THE CLOCK
+        end_time = time.time()
         time_taken = round(end_time - start_time, 2)
             
         return jsonify({
@@ -183,7 +142,7 @@ def run_review():
             "repository": repo,
             "branch": head_branch,
             "reviews": results,
-            "stats": {            # <--- ADD STATS PAYLOAD
+            "stats": {
                 "time_taken": time_taken,
                 "total_tokens": total_tokens
             }
