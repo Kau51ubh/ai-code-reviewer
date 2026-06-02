@@ -1,17 +1,18 @@
 import os
 import time  
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS 
-import vertexai
-from vertexai.generative_models import GenerativeModel
+# Modern SDK imports to prevent the June 2026 removal crash
+from google import genai
+from google.genai import types
 
 app = Flask(__name__)
 CORS(app) 
 
-# Ensure Vertex AI is initialized using the environment's project context
-vertexai.init(location="us-central1") 
-model = GenerativeModel("gemini-2.5-flash")
+# Initialize the new Google GenAI Client
+# It automatically reads your ambient GCP project authentication contexts
+client = genai.Client(vertexai=True, location="us-central1")
 
 def load_rules_from_file(filepath):
     """Helper function to read external rule files gracefully."""
@@ -45,7 +46,7 @@ def get_changed_files(repo, base_branch, head_branch, token):
     return target_files
 
 def review_code_with_gemini(filename, code):
-    """Sends the code to Gemini for review using externally loaded rules."""
+    """Sends the code to Gemini for review using externally loaded rules via the modern client."""
     
     code_lines = code.split('\n')
     numbered_code = '\n'.join([f"{i+1:03d} | {line}" for i, line in enumerate(code_lines)])
@@ -72,9 +73,7 @@ def review_code_with_gemini(filename, code):
     Use **bold text** to highlight the specific issue name and line number citation. Example: "* **Hardcoded Dataset (Line 003):** ..."
     """
     
-    # Dynamically load specific instructions from external text files
     specific_instructions = ""
-    
     if filename.endswith('.sql'):
         specific_instructions = load_rules_from_file('rules_sql.txt')
     elif filename.endswith('_INTERFACE_VM.py'):
@@ -95,12 +94,21 @@ def review_code_with_gemini(filename, code):
     ```
     """
     
-    response = model.generate_content(prompt)
+    # Modern SDK API Call structure utilizing gemini-2.5-flash
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=prompt
+    )
     return response
+
+@app.route('/', methods=['GET'])
+def health_check():
+    """Renders your frontend web interface natively instead of throwing a 404."""
+    return render_template('index.html')
 
 @app.route('/review', methods=['POST'])
 def run_review():
-    data = request.get_json()
+    data = request.get_json() or {}
     
     repo = data.get('repo')
     head_branch = data.get('branch')
@@ -129,14 +137,17 @@ def run_review():
             response_obj = review_code_with_gemini(filename, code)
             results[filename] = response_obj.text
             
+            # FIXED: Updated modern token counters attributes mapping to total_token_count
             try:
-                total_tokens += response_obj.usage_metadata.total_token_count
-            except AttributeError:
+                if response_obj.usage_metadata:
+                    total_tokens += response_obj.usage_metadata.total_token_count
+            except AttributeError as e:
+                print(f"Warning: Could not extract tokens - {e}")
                 pass
                 
         end_time = time.time()
         time_taken = round(end_time - start_time, 2)
-            
+        
         return jsonify({
             "status": "success",
             "repository": repo,
@@ -152,4 +163,6 @@ def run_review():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    # Ensure debug mode is toggled via environment settings rather than hardcoded True in production
+    debug_mode = os.environ.get("FLASK_ENV") == "development"
+    app.run(debug=debug_mode, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
