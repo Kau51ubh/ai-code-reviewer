@@ -50,7 +50,7 @@ def needs_ai_review(filename, content):
     - .sql files ONLY go to AI if they have JOINs or complex aggregations.
     """
     if not filename.endswith('.sql'):
-        return False # Hard cutoff for KSH and PY
+        return False 
         
     content_upper = content.upper()
     complex_keywords = ['JOIN ', 'GROUP BY', 'OVER (', 'PARTITION BY', 'UNION']
@@ -70,25 +70,32 @@ class DummyResponse:
 
 def review_code_with_gemini(filename, pre_cleaned_code):
     if not needs_ai_review(filename, pre_cleaned_code):
-        dummy_text = f"### 💡 Advanced Optimizations\nNo advanced architectural bottlenecks detected. AI review bypassed to save tokens (Simple code structure).\n\n### 🛠️ Final Refactored Code\n```\n{pre_cleaned_code}\n```"
+        dummy_text = f"### 💡 Advanced Optimizations\nNo advanced architectural bottlenecks detected. AI review bypassed to save tokens (Simple code structure).\n\n### 🛠️ Final Refactored Code\n```sql\n{pre_cleaned_code}\n```"
         return DummyResponse(dummy_text)
 
     code_lines = pre_cleaned_code.split('\n')
     numbered_code = '\n'.join([f"{i+1:03d} | {line}" for i, line in enumerate(code_lines)])
     
     base_instructions = f"""
-    You are a Senior Architect. The code below has ALREADY been pre-processed locally to fix basic syntax, parameterization, and timestamp functions. 
+    You are a Senior Data Architect specializing in Google BigQuery. 
+    All SQL syntax, recommendations, and optimizations MUST strictly adhere to BigQuery Standard SQL.
+    
+    The code below has ALREADY been pre-processed locally to fix basic syntax, parameterization, and timestamp functions. 
     DO NOT mention basic syntax fixes.
     
     ONLY look for:
-    1. Architectural bottlenecks (e.g., poor JOIN strategies, cross-joins, inefficient loops).
-    2. Suggest optimizations for query execution plans or scaling.
+    1. Architectural bottlenecks specific to BigQuery (e.g., poor JOIN strategies, cross-joins, inefficient window functions, failing to filter early, or bad scaling patterns).
+    2. Suggest optimizations for BigQuery query execution plans, slot utilization, and performance.
     
     If no severe bottlenecks exist, output EXACTLY: "No advanced architectural bottlenecks detected."
 
     Format your output strictly with these two headings:
+    
     ### 💡 Advanced Optimizations
+    (Place ALL your explanations, reasoning, and context here.)
+
     ### 🛠️ Final Refactored Code
+    (Output ONLY the raw markdown code block here. Do NOT place any conversational text under this heading. Start immediately with ```)
     """
     
     specific_instructions = ""
@@ -154,6 +161,7 @@ def prepare_review():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 @app.route('/process_file', methods=['POST'])
 def process_single_file():
     """Step 2: Process a single file so the frontend can update counters in real-time."""
@@ -188,6 +196,7 @@ def process_single_file():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
