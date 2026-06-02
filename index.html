@@ -64,6 +64,8 @@
 </head>
 <body class="min-h-screen text-slate-800 selection:bg-brand-100 selection:text-brand-900 flex flex-col">
 
+    <div id="toast-container" style="position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999; display: flex; flex-direction: column; gap: 0.75rem;"></div>
+
     <header class="bg-white border-b border-slate-200 shadow-sm sticky top-0 z-50">
         <nav class="container mx-auto px-6 py-4 flex items-center justify-between">
             <div class="flex items-center gap-3">
@@ -149,7 +151,7 @@
             </div>
         </div>
 
-        <div id="metricsBar" class="hidden grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <div id="metricsBar" class="hidden grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
             <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
                 <div class="p-2 bg-green-50 text-green-600 rounded-lg"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div>
                 <div><p class="text-xs text-slate-500 font-semibold uppercase tracking-wider">Execution</p><p id="timeTaken" class="text-lg font-bold text-slate-800">0.00s</p></div>
@@ -165,6 +167,12 @@
             <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
                 <div class="p-2 bg-emerald-50 text-emerald-600 rounded-lg"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div>
                 <div><p class="text-xs text-slate-500 font-semibold uppercase tracking-wider">Status</p><p class="text-lg font-bold text-emerald-600">Complete</p></div>
+            </div>
+            <div class="bg-slate-900 hover:bg-brand-600 transition-colors rounded-xl shadow-sm flex items-center justify-center p-4 cursor-pointer" onclick="exportMarkdownReport()">
+                <div class="flex items-center gap-2 text-white">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                    <span class="font-semibold text-sm">Export Report</span>
+                </div>
             </div>
         </div>
 
@@ -196,10 +204,24 @@
     <script>
         const PREPARE_URL = "/prepare";
         const PROCESS_URL = "/process_file";
+        const CHAT_URL = "/chat";
+        
         let renderedFilePayloads = {}; 
         let loadingInterval;
+        
+        // Global Store for Data Export and Chat Context
+        window.fileDataStore = {};
 
-        // Global UI Toggler for Code Tabs
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const colors = type === 'success' ? 'bg-slate-900 text-white' : 'bg-red-600 text-white';
+            toast.className = `flex items-center gap-3 ${colors} px-4 py-3 rounded-xl shadow-xl transition-all`;
+            toast.innerHTML = `<span class="text-sm font-medium tracking-wide">${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
         window.switchCodeView = function(fileId, viewType) {
             ['refactored', 'original', 'diff'].forEach(type => {
                 const btn = document.getElementById(`btn-${fileId}-${type}`);
@@ -225,32 +247,10 @@
         function startLoadingText(overrideText = null) {
             clearInterval(loadingInterval);
             const el = document.getElementById('loadingText');
-            
-            if (overrideText) {
-                el.textContent = overrideText;
-                el.style.opacity = 1;
-                return;
-            }
-            
-            const texts = [
-                "Applying local linter formats...",
-                "Executing smart gateway routing...",
-                "Bypassing AI for simple code constructs...",
-                "Processing deep architectural reviews...",
-                "Generating refactored IDE output..."
-            ];
-            let i = 0;
-            el.textContent = "Connecting to repository...";
-            
-            loadingInterval = setInterval(() => {
-                i = (i + 1) % texts.length;
-                el.style.opacity = 0;
-                setTimeout(() => {
-                    el.textContent = texts[i];
-                    el.style.opacity = 1;
-                    el.style.transition = "opacity 0.3s ease";
-                }, 300);
-            }, 2500);
+            if (overrideText) { el.textContent = overrideText; return; }
+            const texts = ["Applying local linter formats...", "Executing smart gateway routing...", "Processing deep architectural reviews..."];
+            let i = 0; el.textContent = "Connecting to repository...";
+            loadingInterval = setInterval(() => { i = (i + 1) % texts.length; el.textContent = texts[i]; }, 2500);
         }
 
         async function runReview() {
@@ -264,7 +264,6 @@
             document.getElementById('metricsBar').classList.add('hidden');
             document.getElementById('errorMessage').classList.add('hidden');
             document.getElementById('scanDashboard').classList.add('hidden');
-            
             document.getElementById('loading').classList.remove('hidden');
             startLoadingText();
             
@@ -273,52 +272,36 @@
             reviewBtn.classList.add('opacity-80', 'cursor-not-allowed');
 
             try {
-                // STEP 1: Fetch Estimation Metrics
-                const prepResponse = await fetch(PREPARE_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                
+                const prepResponse = await fetch(PREPARE_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 const prepData = await prepResponse.json();
                 if (!prepResponse.ok) throw new Error(prepData.error || 'Failed to fetch repository.');
 
                 const files = prepData.files;
                 if(files.length === 0) throw new Error("No valid files found to review.");
 
-                // Set Initial Dashboard Display
                 document.getElementById('estTime').textContent = prepData.estimates.estimated_time + 's';
                 document.getElementById('estTokens').textContent = prepData.estimates.estimated_tokens.toLocaleString();
                 document.getElementById('estCost').textContent = prepData.estimates.estimated_cost < 0.01 ? '< $0.01' : '$' + prepData.estimates.estimated_cost.toFixed(3);
                 
-                let actualTokens = 0;
-                let actualTime = 0;
+                let actualTokens = 0; let actualTime = 0;
                 document.getElementById('actualFiles').textContent = `0 / ${files.length}`;
                 document.getElementById('actualTokens').textContent = '0';
                 document.getElementById('actualTime').textContent = '0.0s';
-                
                 document.getElementById('scanDashboard').classList.remove('hidden');
                 
-                // Prepare Sidebar
                 document.getElementById('sidebar-list').innerHTML = '';
                 renderedFilePayloads = {};
+                window.fileDataStore = {};
                 document.getElementById('results-layout').classList.remove('hidden');
 
-                // STEP 2: Process File-by-File in Real-Time
                 for (let i = 0; i < files.length; i++) {
                     const currentFile = files[i];
                     startLoadingText(`Scanning [${i+1}/${files.length}]: ${currentFile.filename}`);
                     
-                    const processResponse = await fetch(PROCESS_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(currentFile)
-                    });
-
+                    const processResponse = await fetch(PROCESS_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(currentFile) });
                     const fileResult = await processResponse.json();
                     if (!processResponse.ok) throw new Error(fileResult.error || `Failed on ${currentFile.filename}`);
 
-                    // TICK COUNTERS UPWARD
                     actualTokens += fileResult.tokens;
                     actualTime += fileResult.time_taken;
                     
@@ -329,7 +312,6 @@
                     renderSingleFile(fileResult, i === 0);
                 }
 
-                // STEP 3: Finalize
                 document.getElementById('loading').classList.add('hidden');
                 document.getElementById('timeTaken').textContent = actualTime.toFixed(1) + "s";
                 document.getElementById('tokenCount').textContent = actualTokens.toLocaleString();
@@ -348,15 +330,64 @@
             }
         }
 
-        // Single File Render (Including Diff Parsing)
+        window.sendChatMessage = async function(safeId, filename) {
+            const inputEl = document.getElementById(`chat-input-${safeId}`);
+            const btnEl = document.getElementById(`chat-btn-${safeId}`);
+            const message = inputEl.value.trim();
+            if (!message) return;
+
+            const fileData = window.fileDataStore[safeId];
+            fileData.chatHistory.push({ role: 'user', text: message });
+            
+            inputEl.value = '';
+            btnEl.disabled = true;
+            btnEl.innerText = '...';
+            renderMainCanvasHTML(safeId); 
+
+            try {
+                const response = await fetch(CHAT_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename: filename, code: fileData.pureRefactoredCode, message: message })
+                });
+                
+                const data = await response.json();
+                if (!response.ok) throw new Error("Chat failed.");
+
+                let aiReplyText = data.reply;
+                const codeHeaderRegex = /### 🛠️ Final Refactored Code\s*/i;
+                if (codeHeaderRegex.test(aiReplyText)) {
+                    const parts = aiReplyText.split(codeHeaderRegex);
+                    const explanation = parts[0].replace(/### 💡 AI Reply/i, '').trim();
+                    const newCodeRaw = parts[1] ? parts[1].trim() : '';
+                    
+                    fileData.chatHistory.push({ role: 'ai', text: explanation });
+                    
+                    const codeMatch = newCodeRaw.match(/^```[a-z]*\n([\s\S]*)\n```$/i);
+                    if (codeMatch) { fileData.pureRefactoredCode = codeMatch[1]; }
+                    else { fileData.pureRefactoredCode = newCodeRaw; }
+
+                } else {
+                    fileData.chatHistory.push({ role: 'ai', text: aiReplyText });
+                }
+
+                renderMainCanvasHTML(safeId);
+                showToast("Code updated from chat!");
+
+            } catch (error) {
+                showToast("Error communicating with Architect.", "error");
+            } finally {
+                btnEl.disabled = false;
+                btnEl.innerText = 'Send';
+            }
+        }
+
         function renderSingleFile(fileResult, isFirstFile) {
             const filename = fileResult.filename;
             const safeId = 'file-' + filename.replace(/[^a-zA-Z0-9]/g, '-');
-            const localFixesArray = fileResult.unit_test_fixes || [];
+            const ext = filename.split('.').pop().toLowerCase();
             
-            let aiMarkdown = fileResult.ai_review || '';
-            let cleanAiMarkdown = aiMarkdown.trim();
-            
+            let cleanAiMarkdown = (fileResult.ai_review || '').trim();
             let reviewPart = cleanAiMarkdown;
             let codePart = '';
             
@@ -368,39 +399,29 @@
                 
                 const codeBlockStart = rawCodePart.indexOf('```');
                 if (codeBlockStart > 0) {
-                    reviewPart += '\n\n**Additional AI Notes:**\n' + rawCodePart.substring(0, codeBlockStart).trim();
+                    reviewPart += '\n\n**Additional Notes:**\n' + rawCodePart.substring(0, codeBlockStart).trim();
                     codePart = rawCodePart.substring(codeBlockStart).trim();
                 } else {
                     codePart = rawCodePart;
                 }
             }
 
-            // Clean codePart for diffing (remove markdown backticks)
             let pureRefactoredCode = codePart;
             const codeMatch = codePart.match(/^```[a-z]*\n([\s\S]*)\n```$/i);
             if (codeMatch) { pureRefactoredCode = codeMatch[1]; }
 
-            // Generate Diff HTML
-            let diffHtml = '';
-            if (pureRefactoredCode && fileResult.original_code) {
-                const diff = Diff.diffLines(fileResult.original_code, pureRefactoredCode);
-                diff.forEach((part) => {
-                    const bg = part.added ? 'rgba(34, 197, 94, 0.15)' : part.removed ? 'rgba(239, 68, 68, 0.15)' : 'transparent';
-                    const textCol = part.added ? '#4ade80' : part.removed ? '#f87171' : '#cbd5e1';
-                    const prefix = part.added ? '+ ' : part.removed ? '- ' : '  ';
-                    
-                    let escaped = part.value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                    const lines = escaped.split('\n');
-                    
-                    lines.forEach((line, idx) => {
-                        if (idx === lines.length - 1 && line === '') return;
-                        diffHtml += `<div style="background-color: ${bg}; color: ${textCol}; padding: 2px 16px; border-left: 2px solid ${part.added ? '#22c55e' : part.removed ? '#ef4444' : 'transparent'}">${prefix}${line}</div>`;
-                    });
-                });
-            }
+            window.fileDataStore[safeId] = {
+                filename: filename,
+                ext: ext,
+                localFixesArray: fileResult.unit_test_fixes || [],
+                reviewPart: reviewPart,
+                originalCode: fileResult.original_code || '',
+                pureRefactoredCode: pureRefactoredCode,
+                chatHistory: [] 
+            };
 
             const contentLower = reviewPart.toLowerCase();
-            let hasLocalErrors = localFixesArray.some(issue => issue.toLowerCase().includes('error') || issue.toLowerCase().includes('critical'));
+            let hasLocalErrors = window.fileDataStore[safeId].localFixesArray.some(issue => issue.toLowerCase().includes('error') || issue.toLowerCase().includes('critical'));
             
             let dotColor = 'bg-emerald-500'; 
             let badgeHtml = `<span class="bg-emerald-50 text-emerald-600 border border-emerald-200 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Clean</span>`;
@@ -409,7 +430,7 @@
                 dotColor = 'bg-red-500';
                 badgeHtml = `<span class="bg-red-50 text-red-600 border border-red-200 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Issues</span>`;
             } else if (contentLower.includes('no advanced architectural') || contentLower.includes('bypassed')) {
-                if (localFixesArray.length > 0) {
+                if (window.fileDataStore[safeId].localFixesArray.length > 0) {
                     dotColor = 'bg-blue-500';
                     badgeHtml = `<span class="bg-blue-50 text-blue-600 border border-blue-200 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Auto-Fix</span>`;
                 }
@@ -418,9 +439,8 @@
                 badgeHtml = `<span class="bg-amber-50 text-amber-600 border border-amber-200 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Optimize</span>`;
             }
 
-            const ext = filename.split('.').pop().toUpperCase();
-            
-            // APPEND TO SIDEBAR
+            window.fileDataStore[safeId].badgeHtml = badgeHtml;
+
             const sidebarList = document.getElementById('sidebar-list');
             const sidebarItem = document.createElement('li');
             sidebarItem.className = `sidebar-item p-3 rounded-xl border border-transparent flex flex-col gap-1.5`;
@@ -434,56 +454,85 @@
                     </div>
                 </div>
                 <div class="flex items-center justify-between pl-4">
-                    <span class="text-xs text-slate-400 font-mono">${ext}</span>
+                    <span class="text-xs text-slate-400 font-mono">${ext.toUpperCase()}</span>
                     ${badgeHtml}
                 </div>
             `;
             sidebarList.appendChild(sidebarItem);
 
+            renderMainCanvasHTML(safeId);
+            if (isFirstFile) activateFile(safeId);
+        }
+
+        function renderMainCanvasHTML(safeId) {
+            const fileData = window.fileDataStore[safeId];
+            
+            let diffHtml = '';
+            if (fileData.pureRefactoredCode && fileData.originalCode) {
+                const diff = Diff.diffLines(fileData.originalCode, fileData.pureRefactoredCode);
+                diff.forEach((part) => {
+                    const bg = part.added ? 'rgba(34, 197, 94, 0.15)' : part.removed ? 'rgba(239, 68, 68, 0.15)' : 'transparent';
+                    const textCol = part.added ? '#4ade80' : part.removed ? '#f87171' : '#cbd5e1';
+                    const prefix = part.added ? '+ ' : part.removed ? '- ' : '  ';
+                    let escaped = part.value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                    const lines = escaped.split('\n');
+                    lines.forEach((line, idx) => {
+                        if (idx === lines.length - 1 && line === '') return;
+                        diffHtml += `<div style="background-color: ${bg}; color: ${textCol}; padding: 2px 16px; border-left: 2px solid ${part.added ? '#22c55e' : part.removed ? '#ef4444' : 'transparent'}">${prefix}${line}</div>`;
+                    });
+                });
+            }
+
             let localFixesHtml = '';
-            if (localFixesArray.length === 0) {
+            if (fileData.localFixesArray.length === 0) {
                 localFixesHtml = `<div class="bg-emerald-50/50 text-emerald-800 border border-emerald-100 p-4 rounded-xl flex items-center gap-3"><p class="text-sm font-medium">All deterministic checks passed.</p></div>`;
             } else {
                 localFixesHtml = `<ul class="space-y-2.5">`;
-                localFixesArray.forEach(issue => {
+                fileData.localFixesArray.forEach(issue => {
                     let badgeColor = "bg-amber-100 text-amber-800 border-amber-200";
                     if(issue.toLowerCase().includes("critical") || issue.toLowerCase().includes("error")) badgeColor = "bg-red-100 text-red-800 border-red-200";
-                    localFixesHtml += `
-                        <li class="bg-white border border-slate-100 p-3.5 rounded-xl shadow-sm flex items-start gap-3">
-                            <span class="text-[0.65rem] font-bold px-1.5 py-0.5 rounded border ${badgeColor} mt-0.5 tracking-wide uppercase">Fix</span>
-                            <p class="text-sm font-medium text-slate-700">${issue}</p>
-                        </li>`;
+                    localFixesHtml += `<li class="bg-white border border-slate-100 p-3.5 rounded-xl shadow-sm flex items-start gap-3"><span class="text-[0.65rem] font-bold px-1.5 py-0.5 rounded border ${badgeColor} mt-0.5 tracking-wide uppercase">Fix</span><p class="text-sm font-medium text-slate-700">${issue}</p></li>`;
                 });
                 localFixesHtml += `</ul>`;
+            }
+
+            let chatHtml = '';
+            if (fileData.chatHistory.length > 0) {
+                chatHtml += `<div class="mb-4 max-h-48 overflow-y-auto space-y-3 pr-2">`;
+                fileData.chatHistory.forEach(msg => {
+                    const isUser = msg.role === 'user';
+                    chatHtml += `
+                        <div class="p-3 rounded-xl text-sm ${isUser ? 'bg-slate-100 border border-slate-200 ml-8' : 'bg-brand-50 border border-brand-100 mr-8'}">
+                            <strong class="block text-[0.65rem] uppercase tracking-wider mb-1 ${isUser ? 'text-slate-500' : 'text-brand-600'}">${isUser ? 'You' : 'Architect'}</strong>
+                            <div class="markdown-body">${marked.parse(msg.text)}</div>
+                        </div>`;
+                });
+                chatHtml += `</div>`;
             }
 
             renderedFilePayloads[safeId] = `
                 <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-8 animate-[fadeIn_0.3s_ease-out]">
                     <div class="flex items-center justify-between mb-8 border-b border-slate-100 pb-4">
-                        <h2 class="text-xl font-mono font-bold text-slate-800">${filename}</h2>
-                        ${badgeHtml.replace('text-[0.65rem]', 'text-xs px-3 py-1')}
+                        <h2 class="text-xl font-mono font-bold text-slate-800">${fileData.filename}</h2>
+                        ${fileData.badgeHtml.replace('text-[0.65rem]', 'text-xs px-3 py-1')}
                     </div>
                     
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-6">
                         <div class="bg-slate-50/50 p-6 rounded-xl border border-slate-100 h-fit">
                             <h4 class="font-bold text-slate-900 text-xs uppercase tracking-widest mb-4 flex items-center gap-2"><div class="w-1.5 h-1.5 rounded-full bg-blue-500"></div> Local Linter Engine</h4>
                             ${localFixesHtml}
                         </div>
                         <div class="bg-slate-50/50 p-6 rounded-xl border border-slate-100 markdown-body">
                             <h4 class="font-bold text-slate-900 text-xs uppercase tracking-widest mb-4 flex items-center gap-2"><div class="w-1.5 h-1.5 rounded-full bg-purple-500"></div> AI Architect Review</h4>
-                            <div class="text-sm text-slate-700">${marked.parse(reviewPart)}</div>
+                            <div class="text-sm text-slate-700">${marked.parse(fileData.reviewPart)}</div>
                         </div>
                     </div>
 
-                    ${codePart ? `
-                    <div class="bg-[#0f172a] rounded-xl border border-slate-700 shadow-xl overflow-hidden mt-4 relative">
+                    ${fileData.pureRefactoredCode ? `
+                    <div class="bg-[#0f172a] rounded-xl border border-slate-700 shadow-xl overflow-hidden mb-6 relative">
                         <div class="bg-[#1e293b] px-4 py-2.5 flex items-center justify-between border-b border-slate-700/50">
                             <div class="flex gap-2 items-center">
-                                <div class="flex gap-2 mr-4">
-                                    <div class="w-3 h-3 rounded-full bg-[#ff5f56]"></div>
-                                    <div class="w-3 h-3 rounded-full bg-[#ffbd2e]"></div>
-                                    <div class="w-3 h-3 rounded-full bg-[#27c93f]"></div>
-                                </div>
+                                <div class="flex gap-2 mr-4"><div class="w-3 h-3 rounded-full bg-[#ff5f56]"></div><div class="w-3 h-3 rounded-full bg-[#ffbd2e]"></div><div class="w-3 h-3 rounded-full bg-[#27c93f]"></div></div>
                                 <div class="flex bg-slate-800/50 rounded-md p-0.5 border border-slate-700">
                                     <button onclick="switchCodeView('${safeId}', 'refactored')" id="btn-${safeId}-refactored" class="text-[0.65rem] font-mono text-white bg-slate-700 rounded px-2.5 py-1 uppercase tracking-wider transition-all shadow-sm">Refactored</button>
                                     <button onclick="switchCodeView('${safeId}', 'original')" id="btn-${safeId}-original" class="text-[0.65rem] font-mono text-slate-400 hover:text-white rounded px-2.5 py-1 uppercase tracking-wider transition-all">Original</button>
@@ -491,29 +540,37 @@
                                 </div>
                             </div>
                         </div>
-                        
                         <div id="view-${safeId}-refactored" class="markdown-body p-4 text-sm code-view block" style="margin-bottom: -1rem;">
-                            ${marked.parse(codePart)}
+                            ${marked.parse('```' + fileData.ext + '\n' + fileData.pureRefactoredCode + '\n```')}
                         </div>
-                        
                         <div id="view-${safeId}-original" class="markdown-body p-4 text-sm code-view hidden" style="margin-bottom: -1rem;">
-                            ${marked.parse('```' + ext.toLowerCase() + '\n' + (fileResult.original_code || '') + '\n```')}
+                            ${marked.parse('```' + fileData.ext + '\n' + fileData.originalCode + '\n```')}
                         </div>
-                        
                         <div id="view-${safeId}-diff" class="py-4 text-sm code-view hidden overflow-x-auto font-mono text-[#e2e8f0]" style="max-height: 600px;">
                             ${diffHtml}
                         </div>
                     </div>
                     ` : ''}
+
+                    <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+                        <h4 class="font-bold text-slate-900 text-[0.65rem] uppercase tracking-widest mb-4 text-brand-600">Interact with Architect</h4>
+                        ${chatHtml}
+                        <div class="flex gap-3">
+                            <input type="text" id="chat-input-${safeId}" class="flex-grow bg-slate-50 border border-slate-200 text-slate-900 rounded-lg p-2.5 focus:bg-white focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none text-sm font-medium" placeholder="Ask to rewrite logic, explain concepts, or revert a change...">
+                            <button onclick="sendChatMessage('${safeId}', '${fileData.filename}')" id="chat-btn-${safeId}" class="bg-brand-600 hover:bg-brand-700 text-white px-5 rounded-lg text-sm font-medium transition-colors">Send</button>
+                        </div>
+                    </div>
                 </div>
             `;
-            
-            if (isFirstFile) activateFile(safeId);
+
+            const navElement = document.getElementById(`nav-${safeId}`);
+            if (navElement && navElement.classList.contains('active')) activateFile(safeId);
         }
 
         function activateFile(fileId) {
             document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active'));
-            document.getElementById(`nav-${fileId}`).classList.add('active');
+            const targetNav = document.getElementById(`nav-${fileId}`);
+            if(targetNav) targetNav.classList.add('active');
 
             const canvas = document.getElementById('main-canvas');
             canvas.innerHTML = renderedFilePayloads[fileId];
@@ -537,6 +594,47 @@
                 const codeElement = block.querySelector('code');
                 if (codeElement) hljs.highlightElement(codeElement);
             });
+        }
+
+        window.exportMarkdownReport = function() {
+            let mdContent = `# 🚀 AI Code Audit Report\n\n`;
+            mdContent += `**Repository:** ${document.getElementById('repo').value}\n`;
+            mdContent += `**Branch:** ${document.getElementById('branch').value}\n`;
+            mdContent += `**Total Files Scanned:** ${document.getElementById('fileCount').textContent}\n`;
+            mdContent += `**Total Tokens Used:** ${document.getElementById('tokenCount').textContent}\n\n`;
+            mdContent += `---\n\n`;
+
+            Object.values(window.fileDataStore).forEach(file => {
+                mdContent += `## 📄 File: ${file.filename}\n\n`;
+                
+                mdContent += `### 🛠️ Local Linter Fixes\n`;
+                if(file.localFixesArray.length === 0) {
+                    mdContent += `* All deterministic checks passed.\n\n`;
+                } else {
+                    file.localFixesArray.forEach(fix => { mdContent += `* ${fix}\n`; });
+                    mdContent += `\n`;
+                }
+
+                mdContent += `### 💡 AI Architect Review\n`;
+                mdContent += `${file.reviewPart}\n\n`;
+
+                if(file.pureRefactoredCode) {
+                    mdContent += `### 💻 Final Refactored Code\n`;
+                    mdContent += `\`\`\`${file.ext}\n${file.pureRefactoredCode}\n\`\`\`\n\n`;
+                }
+                mdContent += `---\n\n`;
+            });
+
+            const blob = new Blob([mdContent], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Code_Review_${document.getElementById('branch').value}.md`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast("Report Exported!");
         }
     </script>
 </body>
