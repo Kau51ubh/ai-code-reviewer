@@ -50,7 +50,7 @@ def needs_ai_review(filename, content):
     - .sql files ONLY go to AI if they have JOINs or complex aggregations.
     """
     if not filename.endswith('.sql'):
-        return False 
+        return False # Hard cutoff for KSH and PY
         
     content_upper = content.upper()
     complex_keywords = ['JOIN ', 'GROUP BY', 'OVER (', 'PARTITION BY', 'UNION']
@@ -161,7 +161,6 @@ def prepare_review():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/process_file', methods=['POST'])
 def process_single_file():
     """Step 2: Process a single file so the frontend can update counters in real-time."""
@@ -191,12 +190,12 @@ def process_single_file():
             "unit_test_fixes": local_linter_issues,
             "ai_review": ai_review_markdown,
             "tokens": tokens_used,
-            "time_taken": time_taken
+            "time_taken": time_taken,
+            "original_code": content  # <-- ADDED: Sends original code back for Diffing
         }), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
