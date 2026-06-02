@@ -197,5 +197,43 @@ def process_single_file():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/chat', methods=['POST'])
+def chat_with_code():
+    """Handles conversational follow-ups for a specific file."""
+    data = request.get_json()
+    filename = data.get('filename')
+    code_context = data.get('code')
+    user_message = data.get('message')
+    
+    if not filename or not user_message:
+        return jsonify({"error": "Missing chat data."}), 400
+
+    prompt = f"""
+    You are a Senior Data Architect specializing in Google BigQuery.
+    The user is asking a follow-up question regarding the file: {filename}.
+
+    Current Refactored Code Context:
+    ```
+    {code_context}
+    ```
+
+    User Request: "{user_message}"
+
+    Address the user's request. If the code needs to be updated based on their request, provide the entirely updated code block.
+    Format your response strictly with these two headings:
+
+    ### 💡 AI Reply
+    (Your explanation and response here)
+
+    ### 🛠️ Final Refactored Code
+    (Output the raw markdown code block here. If no code changes are needed, output the original code block provided above. Start immediately with ```)
+    """
+
+    try:
+        response = model.generate_content(prompt)
+        return jsonify({"reply": response.text}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
