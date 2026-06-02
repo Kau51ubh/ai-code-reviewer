@@ -29,6 +29,7 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark-reasonable.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsdiff/5.1.0/diff.min.js"></script>
     
     <style>
         body { background-color: #f8fafc; background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 24px 24px; }
@@ -198,6 +199,29 @@
         let renderedFilePayloads = {}; 
         let loadingInterval;
 
+        // Global UI Toggler for Code Tabs
+        window.switchCodeView = function(fileId, viewType) {
+            ['refactored', 'original', 'diff'].forEach(type => {
+                const btn = document.getElementById(`btn-${fileId}-${type}`);
+                const view = document.getElementById(`view-${fileId}-${type}`);
+                if (btn && view) {
+                    if (type === viewType) {
+                        btn.classList.replace('text-slate-400', 'text-white');
+                        btn.classList.add('bg-slate-700');
+                        btn.classList.remove('hover:text-white');
+                        view.classList.remove('hidden');
+                        view.classList.add('block');
+                    } else {
+                        btn.classList.replace('text-white', 'text-slate-400');
+                        btn.classList.remove('bg-slate-700');
+                        btn.classList.add('hover:text-white');
+                        view.classList.remove('block');
+                        view.classList.add('hidden');
+                    }
+                }
+            });
+        }
+
         function startLoadingText(overrideText = null) {
             clearInterval(loadingInterval);
             const el = document.getElementById('loadingText');
@@ -294,7 +318,7 @@
                     const fileResult = await processResponse.json();
                     if (!processResponse.ok) throw new Error(fileResult.error || `Failed on ${currentFile.filename}`);
 
-                    // TICK COUNTERS UPWARD IN REAL TIME
+                    // TICK COUNTERS UPWARD
                     actualTokens += fileResult.tokens;
                     actualTime += fileResult.time_taken;
                     
@@ -302,7 +326,6 @@
                     document.getElementById('actualTime').textContent = actualTime.toFixed(1) + 's';
                     document.getElementById('actualFiles').textContent = `${i+1} / ${files.length}`;
 
-                    // RENDER FILE IMMEDIATELY
                     renderSingleFile(fileResult, i === 0);
                 }
 
@@ -325,7 +348,7 @@
             }
         }
 
-        // Extracts single-file logic so the sidebar populates live
+        // Single File Render (Including Diff Parsing)
         function renderSingleFile(fileResult, isFirstFile) {
             const filename = fileResult.filename;
             const safeId = 'file-' + filename.replace(/[^a-zA-Z0-9]/g, '-');
@@ -333,19 +356,16 @@
             
             let aiMarkdown = fileResult.ai_review || '';
             let cleanAiMarkdown = aiMarkdown.trim();
-            const fullBlockMatch = cleanAiMarkdown.match(/^```[a-z]*\n([\s\S]*)\n```$/i);
-            if (fullBlockMatch) { cleanAiMarkdown = fullBlockMatch[1].trim(); }
-
+            
             let reviewPart = cleanAiMarkdown;
             let codePart = '';
-            const codeHeaderRegex = /### 🛠️ Final Refactored Code\s*/i;
             
+            const codeHeaderRegex = /### 🛠️ Final Refactored Code\s*/i;
             if (codeHeaderRegex.test(cleanAiMarkdown)) {
                 const parts = cleanAiMarkdown.split(codeHeaderRegex);
                 reviewPart = parts[0].trim();
                 let rawCodePart = parts[1] ? parts[1].trim() : '';
                 
-                // Smart catcher for stray text before the code block
                 const codeBlockStart = rawCodePart.indexOf('```');
                 if (codeBlockStart > 0) {
                     reviewPart += '\n\n**Additional AI Notes:**\n' + rawCodePart.substring(0, codeBlockStart).trim();
@@ -353,6 +373,30 @@
                 } else {
                     codePart = rawCodePart;
                 }
+            }
+
+            // Clean codePart for diffing (remove markdown backticks)
+            let pureRefactoredCode = codePart;
+            const codeMatch = codePart.match(/^```[a-z]*\n([\s\S]*)\n```$/i);
+            if (codeMatch) { pureRefactoredCode = codeMatch[1]; }
+
+            // Generate Diff HTML
+            let diffHtml = '';
+            if (pureRefactoredCode && fileResult.original_code) {
+                const diff = Diff.diffLines(fileResult.original_code, pureRefactoredCode);
+                diff.forEach((part) => {
+                    const bg = part.added ? 'rgba(34, 197, 94, 0.15)' : part.removed ? 'rgba(239, 68, 68, 0.15)' : 'transparent';
+                    const textCol = part.added ? '#4ade80' : part.removed ? '#f87171' : '#cbd5e1';
+                    const prefix = part.added ? '+ ' : part.removed ? '- ' : '  ';
+                    
+                    let escaped = part.value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                    const lines = escaped.split('\n');
+                    
+                    lines.forEach((line, idx) => {
+                        if (idx === lines.length - 1 && line === '') return;
+                        diffHtml += `<div style="background-color: ${bg}; color: ${textCol}; padding: 2px 16px; border-left: 2px solid ${part.added ? '#22c55e' : part.removed ? '#ef4444' : 'transparent'}">${prefix}${line}</div>`;
+                    });
+                });
             }
 
             const contentLower = reviewPart.toLowerCase();
@@ -396,7 +440,6 @@
             `;
             sidebarList.appendChild(sidebarItem);
 
-            // GENERATE MAIN HTML PAYLOAD
             let localFixesHtml = '';
             if (localFixesArray.length === 0) {
                 localFixesHtml = `<div class="bg-emerald-50/50 text-emerald-800 border border-emerald-100 p-4 rounded-xl flex items-center gap-3"><p class="text-sm font-medium">All deterministic checks passed.</p></div>`;
@@ -434,16 +477,31 @@
 
                     ${codePart ? `
                     <div class="bg-[#0f172a] rounded-xl border border-slate-700 shadow-xl overflow-hidden mt-4 relative">
-                        <div class="bg-[#1e293b] px-4 py-2.5 flex items-center border-b border-slate-700/50">
-                            <div class="flex gap-2">
-                                <div class="w-3 h-3 rounded-full bg-[#ff5f56]"></div>
-                                <div class="w-3 h-3 rounded-full bg-[#ffbd2e]"></div>
-                                <div class="w-3 h-3 rounded-full bg-[#27c93f]"></div>
+                        <div class="bg-[#1e293b] px-4 py-2.5 flex items-center justify-between border-b border-slate-700/50">
+                            <div class="flex gap-2 items-center">
+                                <div class="flex gap-2 mr-4">
+                                    <div class="w-3 h-3 rounded-full bg-[#ff5f56]"></div>
+                                    <div class="w-3 h-3 rounded-full bg-[#ffbd2e]"></div>
+                                    <div class="w-3 h-3 rounded-full bg-[#27c93f]"></div>
+                                </div>
+                                <div class="flex bg-slate-800/50 rounded-md p-0.5 border border-slate-700">
+                                    <button onclick="switchCodeView('${safeId}', 'refactored')" id="btn-${safeId}-refactored" class="text-[0.65rem] font-mono text-white bg-slate-700 rounded px-2.5 py-1 uppercase tracking-wider transition-all shadow-sm">Refactored</button>
+                                    <button onclick="switchCodeView('${safeId}', 'original')" id="btn-${safeId}-original" class="text-[0.65rem] font-mono text-slate-400 hover:text-white rounded px-2.5 py-1 uppercase tracking-wider transition-all">Original</button>
+                                    <button onclick="switchCodeView('${safeId}', 'diff')" id="btn-${safeId}-diff" class="text-[0.65rem] font-mono text-slate-400 hover:text-white rounded px-2.5 py-1 uppercase tracking-wider transition-all">Diff</button>
+                                </div>
                             </div>
-                            <span class="ml-4 text-[0.65rem] font-mono text-slate-400 font-semibold tracking-widest uppercase">Final Refactored Build</span>
                         </div>
-                        <div class="markdown-body p-4 text-sm" style="margin-bottom: -1rem;">
+                        
+                        <div id="view-${safeId}-refactored" class="markdown-body p-4 text-sm code-view block" style="margin-bottom: -1rem;">
                             ${marked.parse(codePart)}
+                        </div>
+                        
+                        <div id="view-${safeId}-original" class="markdown-body p-4 text-sm code-view hidden" style="margin-bottom: -1rem;">
+                            ${marked.parse('```' + ext.toLowerCase() + '\n' + (fileResult.original_code || '') + '\n```')}
+                        </div>
+                        
+                        <div id="view-${safeId}-diff" class="py-4 text-sm code-view hidden overflow-x-auto font-mono text-[#e2e8f0]" style="max-height: 600px;">
+                            ${diffHtml}
                         </div>
                     </div>
                     ` : ''}
