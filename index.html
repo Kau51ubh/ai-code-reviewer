@@ -123,23 +123,25 @@
                 <h3 class="text-xl font-bold text-slate-800 mb-2">Analyzing Architecture</h3>
                 <p id="loadingText" class="text-sm font-medium text-brand-600 h-6">Fetching metadata...</p>
                 
-                <div id="scanDashboard" class="hidden mt-8 w-full max-w-2xl bg-slate-50 border border-slate-200 rounded-xl p-6">
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-6 text-center">
+                <div id="scanDashboard" class="hidden mt-8 w-full max-w-4xl bg-slate-50 border border-slate-200 rounded-xl p-6">
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-6 text-center divide-x divide-slate-200">
                         <div>
-                            <p class="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1">Total Files</p>
-                            <p id="estFiles" class="text-2xl font-black text-slate-800 font-mono">0</p>
+                            <p class="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1">Processed</p>
+                            <p id="actualFiles" class="text-2xl font-black text-brand-600 font-mono">0 / 0</p>
                         </div>
                         <div>
-                            <p class="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1">Est. Time</p>
-                            <p id="estTime" class="text-2xl font-black text-slate-800 font-mono">0s</p>
+                            <p class="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1">Time Elapsed</p>
+                            <p id="actualTime" class="text-2xl font-black text-slate-800 font-mono">0.0s</p>
+                            <p class="text-[0.65rem] text-slate-400 mt-1 font-semibold">Est: <span id="estTime">0s</span></p>
                         </div>
                         <div>
-                            <p class="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1">Est. Tokens</p>
-                            <p id="estTokens" class="text-2xl font-black text-slate-800 font-mono">0</p>
+                            <p class="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1">Actual Tokens</p>
+                            <p id="actualTokens" class="text-2xl font-black text-purple-600 font-mono">0</p>
+                            <p class="text-[0.65rem] text-slate-400 mt-1 font-semibold">Est: <span id="estTokens">0</span></p>
                         </div>
                         <div>
                             <p class="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1">Est. Cost</p>
-                            <p id="estCost" class="text-2xl font-black text-emerald-600 font-mono">$0</p>
+                            <p id="estCost" class="text-2xl font-black text-emerald-600 font-mono mt-1">$0</p>
                         </div>
                     </div>
                 </div>
@@ -191,12 +193,21 @@
     </main>
 
     <script>
-        const API_URL = "/review";
-        const ESTIMATE_URL = "/estimate";
+        const PREPARE_URL = "/prepare";
+        const PROCESS_URL = "/process_file";
         let renderedFilePayloads = {}; 
         let loadingInterval;
 
-        function startLoadingText() {
+        function startLoadingText(overrideText = null) {
+            clearInterval(loadingInterval);
+            const el = document.getElementById('loadingText');
+            
+            if (overrideText) {
+                el.textContent = overrideText;
+                el.style.opacity = 1;
+                return;
+            }
+            
             const texts = [
                 "Applying local linter formats...",
                 "Executing smart gateway routing...",
@@ -205,7 +216,6 @@
                 "Generating refactored IDE output..."
             ];
             let i = 0;
-            const el = document.getElementById('loadingText');
             el.textContent = "Connecting to repository...";
             
             loadingInterval = setInterval(() => {
@@ -240,44 +250,68 @@
 
             try {
                 // STEP 1: Fetch Estimation Metrics
-                const estResponse = await fetch(ESTIMATE_URL, {
+                const prepResponse = await fetch(PREPARE_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
                 
-                if (estResponse.ok) {
-                    const estData = await estResponse.json();
-                    if (estData.file_count !== undefined) {
-                        document.getElementById('estFiles').textContent = estData.file_count;
-                        document.getElementById('estTime').textContent = '~' + estData.estimated_time + 's';
-                        document.getElementById('estTokens').textContent = estData.estimated_tokens.toLocaleString();
-                        
-                        let costStr = estData.estimated_cost < 0.01 ? '< $0.01' : '$' + estData.estimated_cost.toFixed(3);
-                        document.getElementById('estCost').textContent = costStr;
-                        document.getElementById('scanDashboard').classList.remove('hidden');
-                    }
+                const prepData = await prepResponse.json();
+                if (!prepResponse.ok) throw new Error(prepData.error || 'Failed to fetch repository.');
+
+                const files = prepData.files;
+                if(files.length === 0) throw new Error("No valid files found to review.");
+
+                // Set Initial Dashboard Display
+                document.getElementById('estTime').textContent = prepData.estimates.estimated_time + 's';
+                document.getElementById('estTokens').textContent = prepData.estimates.estimated_tokens.toLocaleString();
+                document.getElementById('estCost').textContent = prepData.estimates.estimated_cost < 0.01 ? '< $0.01' : '$' + prepData.estimates.estimated_cost.toFixed(3);
+                
+                let actualTokens = 0;
+                let actualTime = 0;
+                document.getElementById('actualFiles').textContent = `0 / ${files.length}`;
+                document.getElementById('actualTokens').textContent = '0';
+                document.getElementById('actualTime').textContent = '0.0s';
+                
+                document.getElementById('scanDashboard').classList.remove('hidden');
+                
+                // Prepare Sidebar
+                document.getElementById('sidebar-list').innerHTML = '';
+                renderedFilePayloads = {};
+                document.getElementById('results-layout').classList.remove('hidden');
+
+                // STEP 2: Process File-by-File in Real-Time
+                for (let i = 0; i < files.length; i++) {
+                    const currentFile = files[i];
+                    startLoadingText(`Scanning [${i+1}/${files.length}]: ${currentFile.filename}`);
+                    
+                    const processResponse = await fetch(PROCESS_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(currentFile)
+                    });
+
+                    const fileResult = await processResponse.json();
+                    if (!processResponse.ok) throw new Error(fileResult.error || `Failed on ${currentFile.filename}`);
+
+                    // TICK COUNTERS UPWARD IN REAL TIME
+                    actualTokens += fileResult.tokens;
+                    actualTime += fileResult.time_taken;
+                    
+                    document.getElementById('actualTokens').textContent = actualTokens.toLocaleString();
+                    document.getElementById('actualTime').textContent = actualTime.toFixed(1) + 's';
+                    document.getElementById('actualFiles').textContent = `${i+1} / ${files.length}`;
+
+                    // RENDER FILE IMMEDIATELY
+                    renderSingleFile(fileResult, i === 0);
                 }
 
-                // STEP 2: Execute the Actual Code Review
-                const response = await fetch(API_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
+                // STEP 3: Finalize
+                document.getElementById('timeTaken').textContent = actualTime.toFixed(1) + "s";
+                document.getElementById('tokenCount').textContent = actualTokens.toLocaleString();
+                document.getElementById('fileCount').textContent = files.length;
+                document.getElementById('metricsBar').classList.remove('hidden');
 
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || 'Request failed.');
-
-                if (data.reviews) {
-                    if(data.stats) {
-                        document.getElementById('timeTaken').textContent = data.stats.time_taken + "s";
-                        document.getElementById('tokenCount').textContent = data.stats.total_tokens.toLocaleString();
-                        document.getElementById('fileCount').textContent = Object.keys(data.reviews).length;
-                        document.getElementById('metricsBar').classList.remove('hidden');
-                    }
-                    processAndRenderLayout(data.reviews);
-                }
             } catch (error) {
                 document.getElementById('errorMessage').classList.remove('hidden');
                 document.getElementById('errorDetails').textContent = error.message;
@@ -290,127 +324,123 @@
             }
         }
 
-        function processAndRenderLayout(reviews) {
+        // Extracts single-file logic so the sidebar populates live
+        function renderSingleFile(fileResult, isFirstFile) {
+            const filename = fileResult.filename;
+            const safeId = 'file-' + filename.replace(/[^a-zA-Z0-9]/g, '-');
+            const localFixesArray = fileResult.unit_test_fixes || [];
+            
+            let aiMarkdown = fileResult.ai_review || '';
+            let cleanAiMarkdown = aiMarkdown.trim();
+            const fullBlockMatch = cleanAiMarkdown.match(/^```[a-z]*\n([\s\S]*)\n```$/i);
+            if (fullBlockMatch) { cleanAiMarkdown = fullBlockMatch[1].trim(); }
+
+            let reviewPart = cleanAiMarkdown;
+            let codePart = '';
+            const codeHeaderRegex = /### 🛠️ Final Refactored Code\s*/i;
+            if (codeHeaderRegex.test(cleanAiMarkdown)) {
+                const parts = cleanAiMarkdown.split(codeHeaderRegex);
+                reviewPart = parts[0].trim();
+                codePart = parts[1] ? parts[1].trim() : '';
+            }
+
+            const contentLower = reviewPart.toLowerCase();
+            let hasLocalErrors = localFixesArray.some(issue => issue.toLowerCase().includes('error') || issue.toLowerCase().includes('critical'));
+            
+            let dotColor = 'bg-emerald-500'; 
+            let badgeHtml = `<span class="bg-emerald-50 text-emerald-600 border border-emerald-200 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Clean</span>`;
+            
+            if (hasLocalErrors || contentLower.includes('syntax error') || contentLower.includes('rule violation')) {
+                dotColor = 'bg-red-500';
+                badgeHtml = `<span class="bg-red-50 text-red-600 border border-red-200 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Issues</span>`;
+            } else if (contentLower.includes('no advanced architectural') || contentLower.includes('bypassed')) {
+                if (localFixesArray.length > 0) {
+                    dotColor = 'bg-blue-500';
+                    badgeHtml = `<span class="bg-blue-50 text-blue-600 border border-blue-200 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Auto-Fix</span>`;
+                }
+            } else {
+                dotColor = 'bg-amber-500';
+                badgeHtml = `<span class="bg-amber-50 text-amber-600 border border-amber-200 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Optimize</span>`;
+            }
+
+            const ext = filename.split('.').pop().toUpperCase();
+            
+            // APPEND TO SIDEBAR
             const sidebarList = document.getElementById('sidebar-list');
-            sidebarList.innerHTML = '';
-            renderedFilePayloads = {}; 
-            let firstFileId = null;
+            const sidebarItem = document.createElement('li');
+            sidebarItem.className = `sidebar-item p-3 rounded-xl border border-transparent flex flex-col gap-1.5`;
+            sidebarItem.id = `nav-${safeId}`;
+            sidebarItem.onclick = () => activateFile(safeId);
+            sidebarItem.innerHTML = `
+                <div class="flex items-center justify-between w-full">
+                    <div class="flex items-center gap-2 overflow-hidden">
+                        <div class="w-2 h-2 rounded-full ${dotColor} shrink-0"></div>
+                        <span class="text-sm font-semibold text-slate-700 truncate">${filename}</span>
+                    </div>
+                </div>
+                <div class="flex items-center justify-between pl-4">
+                    <span class="text-xs text-slate-400 font-mono">${ext}</span>
+                    ${badgeHtml}
+                </div>
+            `;
+            sidebarList.appendChild(sidebarItem);
 
-            Object.entries(reviews).forEach(([filename, filePayload], index) => {
-                const safeId = 'file-' + filename.replace(/[^a-zA-Z0-9]/g, '-');
-                if (index === 0) firstFileId = safeId;
+            // GENERATE MAIN HTML PAYLOAD
+            let localFixesHtml = '';
+            if (localFixesArray.length === 0) {
+                localFixesHtml = `<div class="bg-emerald-50/50 text-emerald-800 border border-emerald-100 p-4 rounded-xl flex items-center gap-3"><p class="text-sm font-medium">All deterministic checks passed.</p></div>`;
+            } else {
+                localFixesHtml = `<ul class="space-y-2.5">`;
+                localFixesArray.forEach(issue => {
+                    let badgeColor = "bg-amber-100 text-amber-800 border-amber-200";
+                    if(issue.toLowerCase().includes("critical") || issue.toLowerCase().includes("error")) badgeColor = "bg-red-100 text-red-800 border-red-200";
+                    localFixesHtml += `
+                        <li class="bg-white border border-slate-100 p-3.5 rounded-xl shadow-sm flex items-start gap-3">
+                            <span class="text-[0.65rem] font-bold px-1.5 py-0.5 rounded border ${badgeColor} mt-0.5 tracking-wide uppercase">Fix</span>
+                            <p class="text-sm font-medium text-slate-700">${issue}</p>
+                        </li>`;
+                });
+                localFixesHtml += `</ul>`;
+            }
 
-                const localFixesArray = filePayload.unit_test_fixes || [];
-                let aiMarkdown = filePayload.ai_review || '';
-                let cleanAiMarkdown = aiMarkdown.trim();
-                const fullBlockMatch = cleanAiMarkdown.match(/^```[a-z]*\n([\s\S]*)\n```$/i);
-                if (fullBlockMatch) { cleanAiMarkdown = fullBlockMatch[1].trim(); }
-
-                let reviewPart = cleanAiMarkdown;
-                let codePart = '';
-                const codeHeaderRegex = /### 🛠️ Final Refactored Code\s*/i;
-                if (codeHeaderRegex.test(cleanAiMarkdown)) {
-                    const parts = cleanAiMarkdown.split(codeHeaderRegex);
-                    reviewPart = parts[0].trim();
-                    codePart = parts[1] ? parts[1].trim() : '';
-                }
-
-                const contentLower = reviewPart.toLowerCase();
-                let hasLocalErrors = localFixesArray.some(issue => issue.toLowerCase().includes('error') || issue.toLowerCase().includes('critical'));
-                
-                let dotColor = 'bg-emerald-500'; 
-                let badgeHtml = `<span class="bg-emerald-50 text-emerald-600 border border-emerald-200 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Clean</span>`;
-                
-                if (hasLocalErrors || contentLower.includes('syntax error') || contentLower.includes('rule violation')) {
-                    dotColor = 'bg-red-500';
-                    badgeHtml = `<span class="bg-red-50 text-red-600 border border-red-200 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Issues</span>`;
-                } else if (contentLower.includes('no advanced architectural') || contentLower.includes('bypassed')) {
-                    if (localFixesArray.length > 0) {
-                        dotColor = 'bg-blue-500';
-                        badgeHtml = `<span class="bg-blue-50 text-blue-600 border border-blue-200 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Auto-Fix</span>`;
-                    }
-                } else {
-                    dotColor = 'bg-amber-500';
-                    badgeHtml = `<span class="bg-amber-50 text-amber-600 border border-amber-200 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Optimize</span>`;
-                }
-
-                const ext = filename.split('.').pop().toUpperCase();
-                const sidebarItem = document.createElement('li');
-                sidebarItem.className = `sidebar-item p-3 rounded-xl border border-transparent flex flex-col gap-1.5`;
-                sidebarItem.id = `nav-${safeId}`;
-                sidebarItem.onclick = () => activateFile(safeId);
-                sidebarItem.innerHTML = `
-                    <div class="flex items-center justify-between w-full">
-                        <div class="flex items-center gap-2 overflow-hidden">
-                            <div class="w-2 h-2 rounded-full ${dotColor} shrink-0"></div>
-                            <span class="text-sm font-semibold text-slate-700 truncate">${filename}</span>
+            renderedFilePayloads[safeId] = `
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-8 animate-[fadeIn_0.3s_ease-out]">
+                    <div class="flex items-center justify-between mb-8 border-b border-slate-100 pb-4">
+                        <h2 class="text-xl font-mono font-bold text-slate-800">${filename}</h2>
+                        ${badgeHtml.replace('text-[0.65rem]', 'text-xs px-3 py-1')}
+                    </div>
+                    
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                        <div class="bg-slate-50/50 p-6 rounded-xl border border-slate-100 h-fit">
+                            <h4 class="font-bold text-slate-900 text-xs uppercase tracking-widest mb-4 flex items-center gap-2"><div class="w-1.5 h-1.5 rounded-full bg-blue-500"></div> Local Linter Engine</h4>
+                            ${localFixesHtml}
+                        </div>
+                        <div class="bg-slate-50/50 p-6 rounded-xl border border-slate-100 markdown-body">
+                            <h4 class="font-bold text-slate-900 text-xs uppercase tracking-widest mb-4 flex items-center gap-2"><div class="w-1.5 h-1.5 rounded-full bg-purple-500"></div> AI Architect Review</h4>
+                            <div class="text-sm text-slate-700">${marked.parse(reviewPart)}</div>
                         </div>
                     </div>
-                    <div class="flex items-center justify-between pl-4">
-                        <span class="text-xs text-slate-400 font-mono">${ext}</span>
-                        ${badgeHtml}
+
+                    ${codePart ? `
+                    <div class="bg-[#0f172a] rounded-xl border border-slate-700 shadow-xl overflow-hidden mt-4 relative">
+                        <div class="bg-[#1e293b] px-4 py-2.5 flex items-center border-b border-slate-700/50">
+                            <div class="flex gap-2">
+                                <div class="w-3 h-3 rounded-full bg-[#ff5f56]"></div>
+                                <div class="w-3 h-3 rounded-full bg-[#ffbd2e]"></div>
+                                <div class="w-3 h-3 rounded-full bg-[#27c93f]"></div>
+                            </div>
+                            <span class="ml-4 text-[0.65rem] font-mono text-slate-400 font-semibold tracking-widest uppercase">Final Refactored Build</span>
+                        </div>
+                        <div class="markdown-body p-4 text-sm" style="margin-bottom: -1rem;">
+                            ${marked.parse(codePart)}
+                        </div>
                     </div>
-                `;
-                sidebarList.appendChild(sidebarItem);
-
-                let localFixesHtml = '';
-                if (localFixesArray.length === 0) {
-                    localFixesHtml = `<div class="bg-emerald-50/50 text-emerald-800 border border-emerald-100 p-4 rounded-xl flex items-center gap-3"><p class="text-sm font-medium">All deterministic checks passed.</p></div>`;
-                } else {
-                    localFixesHtml = `<ul class="space-y-2.5">`;
-                    localFixesArray.forEach(issue => {
-                        let badgeColor = "bg-amber-100 text-amber-800 border-amber-200";
-                        if(issue.toLowerCase().includes("critical") || issue.toLowerCase().includes("error")) badgeColor = "bg-red-100 text-red-800 border-red-200";
-                        localFixesHtml += `
-                            <li class="bg-white border border-slate-100 p-3.5 rounded-xl shadow-sm flex items-start gap-3">
-                                <span class="text-[0.65rem] font-bold px-1.5 py-0.5 rounded border ${badgeColor} mt-0.5 tracking-wide uppercase">Fix</span>
-                                <p class="text-sm font-medium text-slate-700">${issue}</p>
-                            </li>`;
-                    });
-                    localFixesHtml += `</ul>`;
-                }
-
-                const mainHtml = `
-                    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 md:p-8 animate-[fadeIn_0.3s_ease-out]">
-                        <div class="flex items-center justify-between mb-8 border-b border-slate-100 pb-4">
-                            <h2 class="text-xl font-mono font-bold text-slate-800">${filename}</h2>
-                            ${badgeHtml.replace('text-[0.65rem]', 'text-xs px-3 py-1')}
-                        </div>
-                        
-                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-                            <div class="bg-slate-50/50 p-6 rounded-xl border border-slate-100 h-fit">
-                                <h4 class="font-bold text-slate-900 text-xs uppercase tracking-widest mb-4 flex items-center gap-2"><div class="w-1.5 h-1.5 rounded-full bg-blue-500"></div> Local Linter Engine</h4>
-                                ${localFixesHtml}
-                            </div>
-                            <div class="bg-slate-50/50 p-6 rounded-xl border border-slate-100 markdown-body">
-                                <h4 class="font-bold text-slate-900 text-xs uppercase tracking-widest mb-4 flex items-center gap-2"><div class="w-1.5 h-1.5 rounded-full bg-purple-500"></div> AI Architect Review</h4>
-                                <div class="text-sm text-slate-700">${marked.parse(reviewPart)}</div>
-                            </div>
-                        </div>
-
-                        ${codePart ? `
-                        <div class="bg-[#0f172a] rounded-xl border border-slate-700 shadow-xl overflow-hidden mt-4 relative">
-                            <div class="bg-[#1e293b] px-4 py-2.5 flex items-center border-b border-slate-700/50">
-                                <div class="flex gap-2">
-                                    <div class="w-3 h-3 rounded-full bg-[#ff5f56]"></div>
-                                    <div class="w-3 h-3 rounded-full bg-[#ffbd2e]"></div>
-                                    <div class="w-3 h-3 rounded-full bg-[#27c93f]"></div>
-                                </div>
-                                <span class="ml-4 text-[0.65rem] font-mono text-slate-400 font-semibold tracking-widest uppercase">Final Refactored Build</span>
-                            </div>
-                            <div class="markdown-body p-4 text-sm" style="margin-bottom: -1rem;">
-                                ${marked.parse(codePart)}
-                            </div>
-                        </div>
-                        ` : ''}
-                    </div>
-                `;
-                
-                renderedFilePayloads[safeId] = mainHtml;
-            });
-
-            document.getElementById('results-layout').classList.remove('hidden');
-            if (firstFileId) activateFile(firstFileId);
+                    ` : ''}
+                </div>
+            `;
+            
+            // Auto-display the very first file
+            if (isFirstFile) activateFile(safeId);
         }
 
         function activateFile(fileId) {
