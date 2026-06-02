@@ -307,17 +307,18 @@
                 }
 
                 // STEP 3: Finalize
+                document.getElementById('loading').classList.add('hidden');
                 document.getElementById('timeTaken').textContent = actualTime.toFixed(1) + "s";
                 document.getElementById('tokenCount').textContent = actualTokens.toLocaleString();
                 document.getElementById('fileCount').textContent = files.length;
                 document.getElementById('metricsBar').classList.remove('hidden');
 
             } catch (error) {
+                document.getElementById('loading').classList.add('hidden');
                 document.getElementById('errorMessage').classList.remove('hidden');
                 document.getElementById('errorDetails').textContent = error.message;
             } finally {
                 clearInterval(loadingInterval);
-                document.getElementById('loading').classList.add('hidden');
                 reviewBtn.disabled = false;
                 reviewBtn.innerHTML = `Start Analysis`;
                 reviewBtn.classList.remove('opacity-80', 'cursor-not-allowed');
@@ -338,10 +339,20 @@
             let reviewPart = cleanAiMarkdown;
             let codePart = '';
             const codeHeaderRegex = /### 🛠️ Final Refactored Code\s*/i;
+            
             if (codeHeaderRegex.test(cleanAiMarkdown)) {
                 const parts = cleanAiMarkdown.split(codeHeaderRegex);
                 reviewPart = parts[0].trim();
-                codePart = parts[1] ? parts[1].trim() : '';
+                let rawCodePart = parts[1] ? parts[1].trim() : '';
+                
+                // Smart catcher for stray text before the code block
+                const codeBlockStart = rawCodePart.indexOf('```');
+                if (codeBlockStart > 0) {
+                    reviewPart += '\n\n**Additional AI Notes:**\n' + rawCodePart.substring(0, codeBlockStart).trim();
+                    codePart = rawCodePart.substring(codeBlockStart).trim();
+                } else {
+                    codePart = rawCodePart;
+                }
             }
 
             const contentLower = reviewPart.toLowerCase();
@@ -439,7 +450,6 @@
                 </div>
             `;
             
-            // Auto-display the very first file
             if (isFirstFile) activateFile(safeId);
         }
 
