@@ -110,8 +110,9 @@ def review_code_with_gemini(filename, pre_cleaned_code):
 def home():
     return render_template('index.html')
 
-@app.route('/estimate', methods=['POST'])
-def estimate_review():
+@app.route('/prepare', methods=['POST'])
+def prepare_review():
+    """Step 1: Fetch files from GitHub and calculate the baseline estimate."""
     data = request.get_json()
     repo = data.get('repo')
     head_branch = data.get('branch')
@@ -126,91 +127,63 @@ def estimate_review():
         file_count = len(files_to_review)
         
         if file_count == 0:
-            return jsonify({"file_count": 0, "estimated_time": 0, "estimated_tokens": 0, "estimated_cost": 0}), 200
+            return jsonify({"files": [], "estimates": {"file_count": 0, "estimated_time": 0, "estimated_tokens": 0, "estimated_cost": 0}}), 200
         
         ai_files = 0
         total_ai_chars = 0
         
         for f in files_to_review:
-            # We must check the same logic to accurately predict AI bypasses
             if needs_ai_review(f['filename'], f['content']):
                 ai_files += 1
                 total_ai_chars += len(f['content'])
                 
-        # HIGH-ACCURACY TIME CALCULATION
-        # Gemini takes ~10s per file. Local lint takes ~0.2s. Base network overhead ~2s.
         estimated_time = 2.0 + (ai_files * 10.0) + ((file_count - ai_files) * 0.2)
-        
-        # HIGH-ACCURACY TOKEN CALCULATION
-        # System instructions + rules alone cost ~1,200 tokens.
-        # AI Output usually costs ~400 tokens. Code chars = ~0.3 tokens each.
         estimated_tokens = int(total_ai_chars * 0.3) + (ai_files * 1600)
-        
-        # Cost is roughly $0.15 per 1 Million tokens
         estimated_cost = (estimated_tokens / 1000000) * 0.15
         
         return jsonify({
-            "file_count": file_count,
-            "estimated_time": round(estimated_time, 1),
-            "estimated_tokens": estimated_tokens,
-            "estimated_cost": estimated_cost
+            "files": files_to_review,
+            "estimates": {
+                "file_count": file_count,
+                "estimated_time": round(estimated_time, 1),
+                "estimated_tokens": estimated_tokens,
+                "estimated_cost": estimated_cost
+            }
         }), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/review', methods=['POST'])
-def run_review():
+@app.route('/process_file', methods=['POST'])
+def process_single_file():
+    """Step 2: Process a single file so the frontend can update counters in real-time."""
     data = request.get_json()
-    repo = data.get('repo')
-    head_branch = data.get('branch')
-    base_branch = data.get('base_branch', 'main')
-    github_token = os.environ.get("GITHUB_TOKEN")
+    filename = data.get('filename')
+    content = data.get('content')
     
-    if not repo or not head_branch:
-        return jsonify({"error": "Missing parameters."}), 400
+    if not filename or not content:
+        return jsonify({"error": "Missing file data."}), 400
 
     try:
         start_time = time.time()
-        total_tokens = 0
         
-        files_to_review = get_changed_files(repo, base_branch, head_branch, github_token)
-        if not files_to_review:
-            return jsonify({"message": "No reviewable files found."}), 200
-            
-        results = {}
+        pre_cleaned_code, local_linter_issues = process_file_locally(filename, content)
+        ai_response_obj = review_code_with_gemini(filename, pre_cleaned_code)
+        ai_review_markdown = ai_response_obj.text
         
-        for file_obj in files_to_review:
-            filename = file_obj['filename']
-            raw_content = file_obj['content']
+        try:
+            tokens_used = ai_response_obj.usage_metadata.total_token_count
+        except AttributeError:
+            tokens_used = 0
             
-            pre_cleaned_code, local_linter_issues = process_file_locally(filename, raw_content)
-            
-            ai_response_obj = review_code_with_gemini(filename, pre_cleaned_code)
-            ai_review_markdown = ai_response_obj.text
-            
-            try:
-                total_tokens += ai_response_obj.usage_metadata.total_token_count
-            except AttributeError:
-                pass
-            
-            results[filename] = {
-                "unit_test_fixes": local_linter_issues,
-                "ai_review": ai_review_markdown
-            }
-            
-        end_time = time.time()
-        time_taken = round(end_time - start_time, 2)
-            
+        time_taken = round(time.time() - start_time, 2)
+        
         return jsonify({
-            "status": "success",
-            "repository": repo,
-            "branch": head_branch,
-            "reviews": results,
-            "stats": {
-                "time_taken": time_taken,
-                "total_tokens": total_tokens
-            }
+            "filename": filename,
+            "unit_test_fixes": local_linter_issues,
+            "ai_review": ai_review_markdown,
+            "tokens": tokens_used,
+            "time_taken": time_taken
         }), 200
 
     except Exception as e:
