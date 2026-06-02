@@ -1,5 +1,21 @@
 import re
 
+def scan_for_secrets(content):
+    """Shift-Left Security: Hardcoded Secrets Scanner."""
+    logs = []
+    # Basic patterns for AWS keys, GCP API keys, and generic passwords
+    patterns = {
+        "GCP API Key": r'(?i)AIza[0-9A-Za-z-_]{35}',
+        "AWS Access Key": r'(?i)AKIA[0-9A-Z]{16}',
+        "Generic Password/Secret": r'(?i)(password|secret|token)[\s=:]+[\'"][^\'"]{6,}[\'"]'
+    }
+    
+    for name, pattern in patterns.items():
+        if re.search(pattern, content):
+            logs.append(f"CRITICAL SECURITY ALERT: Found potential {name} in code. File processing halted.")
+            
+    return logs
+
 def pre_process_sql(filename, content):
     logs = []
     
@@ -39,15 +55,12 @@ def pre_process_sql(filename, content):
         stmt_upper = stmt.upper()
         bypass_pattern = re.compile(r'\bWHERE\s+(TRUE|1\s*=\s*1)\b', re.IGNORECASE)
 
-        # Catch 'SELECT *'
         if re.search(r'\bSELECT\s+\*', stmt_upper):
             logs.append("Warning: 'SELECT *' detected. Columns should be explicitly listed to prevent schema-drift errors.")
 
-        # Catch missing ON in JOINs (Basic heuristic for cross joins)
         if ' JOIN ' in stmt_upper and ' ON ' not in stmt_upper and 'CROSS JOIN' not in stmt_upper:
             logs.append("Warning: JOIN detected without an 'ON' condition. Verify this is not an accidental Cartesian product.")
 
-        # Fix: Missing or Bypassed WHERE in DELETE
         if 'DELETE FROM' in stmt_upper:
             if 'WHERE' not in stmt_upper:
                 stmt = stmt + "\nWHERE <MISSING_FILTER_REQUIRED> /* TODO: Add specific condition */"
@@ -56,7 +69,6 @@ def pre_process_sql(filename, content):
                 stmt = bypass_pattern.sub('WHERE <MISSING_FILTER_REQUIRED> /* TODO: Replace global bypass with condition */', stmt)
                 logs.append("Critical Fix: Overwrote dangerous global bypass in DELETE statement with safe placeholder.")
 
-        # Fix: Missing or Bypassed WHERE in UPDATE
         elif 'UPDATE ' in stmt_upper and 'SET ' in stmt_upper:
             if 'WHERE' not in stmt_upper:
                 stmt = stmt + "\nWHERE <MISSING_FILTER_REQUIRED> /* TODO: Add specific condition */"
@@ -65,7 +77,6 @@ def pre_process_sql(filename, content):
                 stmt = bypass_pattern.sub('WHERE <MISSING_FILTER_REQUIRED> /* TODO: Replace global bypass with condition */', stmt)
                 logs.append("Critical Fix: Overwrote dangerous global bypass in UPDATE statement with safe placeholder.")
 
-        # Fix: Missing Target Column List in INSERT
         insert_match = re.search(r'(INSERT\s+INTO\s+[A-Za-z0-9_$.{}]+)\s+(SELECT|VALUES)', stmt, re.IGNORECASE)
         if insert_match:
             table_part = insert_match.group(1)
@@ -99,13 +110,11 @@ def pre_process_sql(filename, content):
     content = ';\n'.join(new_statements) + (';' if content.strip().endswith(';') else '')
     return content, logs
 
-
 def pre_process_ksh(filename, content):
     logs = []
     fixed_lines = []
     lines = content.split('\n')
     
-    # Global check for strict error handling
     if "set -e" not in content and "set -o pipefail" not in content:
         logs.append("Warning: Script lacks strict error handling. Recommend adding 'set -e' or 'set -o pipefail' at the top.")
 
@@ -120,7 +129,6 @@ def pre_process_ksh(filename, content):
         if "echo " in line.lower() and any(secret in line.lower() for secret in ["pass", "pwd", "secret", "token"]):
             logs.append(f"Line {idx:03d}: Severe Security Breach. Found explicit raw terminal echo containing secrets.")
             
-        # Dangerous rm -rf check (e.g. rm -rf $DIR/ where DIR is empty)
         if re.search(r'rm\s+-r[fF]?\s+\$[A-Za-z0-9_]+/?\s*$', line):
             logs.append(f"Line {idx:03d}: Dangerous deletion pattern detected. Verify variables are populated before running 'rm -rf'.")
 
@@ -128,12 +136,9 @@ def pre_process_ksh(filename, content):
 
     return '\n'.join(fixed_lines), logs
 
-
 def pre_process_py(filename, content):
-    """Applies rule-based local checks AND physical text replacements to Python/Airflow DAGs."""
     logs = []
     
-    # 1. Fix DAG_NAME suffix if missing
     dag_name_match = re.search(r'DAG_NAME\s*=\s*["\'](.*?)["\']', content)
     if dag_name_match:
         dag_name = dag_name_match.group(1)
@@ -141,20 +146,15 @@ def pre_process_py(filename, content):
             content = re.sub(r'(DAG_NAME\s*=\s*["\'])(.*?)(["\'])', r'\1\2_VM\3', content)
             logs.append("Fix: Automatically appended mandatory '_VM' suffix to DAG_NAME.")
 
-    # 2. Fix 'timedelta' import if missing
     if "timedelta" in content and "import timedelta" not in content and "datetime, timedelta" not in content:
         content = re.sub(r'from datetime import datetime', r'from datetime import datetime, timedelta', content)
         logs.append("Fix: Injected missing 'timedelta' import into datetime module.")
 
-    # 3. Remove 'catchup' from default_args if it exists (it strictly belongs in the DAG definition)
     if re.search(r'[\'"]catchup[\'"]\s*:\s*(True|False)\s*,?', content, re.IGNORECASE):
-        # Physically strips the line out of the dictionary
         content = re.sub(r'[ \t]*[\'"]catchup[\'"]\s*:\s*(True|False)\s*,?\n?', '', content, flags=re.IGNORECASE)
         logs.append("Fix: Removed 'catchup' from default_args (parameter belongs in DAG definition, not args).")
 
-    # 4. Inject missing Airflow parameters directly into the DAG() instantiation (Clean Formatting)
     missing_dag_params = []
-    
     if "catchup=" not in content.replace(" ", ""):
         missing_dag_params.append("catchup=False")
         logs.append("Fix: Injected 'catchup=False' into DAG definition.")
@@ -167,19 +167,22 @@ def pre_process_py(filename, content):
         missing_dag_params.append('tags=["interface"]')
         logs.append("Fix: Injected 'tags=[\"interface\"]' array for workspace categorization.")
         
-    # If anything was missing, bundle it up with clean newlines and tabs, and inject it once
     if missing_dag_params:
         injection_string = ",\n\t\t".join(missing_dag_params) + ",\n\t\t"
         content = re.sub(r'(dag\s*=\s*DAG\s*\()', fr'\1\n\t\t{injection_string}', content, flags=re.IGNORECASE)
 
     return content, logs
 
-
 def process_file_locally(filename, content):
+    security_logs = scan_for_secrets(content)
+    if security_logs:
+        return content, security_logs
+
     if filename.endswith('.sql'):
         return pre_process_sql(filename, content)
     elif filename.endswith('.ksh'):
         return pre_process_ksh(filename, content)
     elif filename.endswith('_INTERFACE_VM.py') or filename.endswith('.py'):
         return pre_process_py(filename, content)
+    
     return content, ["Unsupported extension file passed into deterministic parsing module."]
