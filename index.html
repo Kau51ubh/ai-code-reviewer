@@ -11,16 +11,19 @@
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
-        tailwind.config = {
-            darkMode: 'class', 
-            theme: {
-                extend: {
-                    fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
-                        mono: ['Fira Code', 'monospace'],
-                    },
-                    colors: {
-                        brand: { 50: '#eff6ff', 100: '#dbeafe', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 900: '#1e3a8a' }
+        // Safety guard: Check if Tailwind CDN loaded successfully before configuring
+        if (typeof tailwind !== 'undefined') {
+            tailwind.config = {
+                darkMode: 'class', 
+                theme: {
+                    extend: {
+                        fontFamily: {
+                            sans: ['Inter', 'sans-serif'],
+                            mono: ['Fira Code', 'monospace'],
+                        },
+                        colors: {
+                            brand: { 50: '#eff6ff', 100: '#dbeafe', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 900: '#1e3a8a' }
+                        }
                     }
                 }
             }
@@ -613,11 +616,13 @@
             let commitHtml = '';
             let validateHtml = '';
             
+            let isFinOpsBlocked = fileData.bq_metrics && fileData.bq_metrics.message && fileData.bq_metrics.message.includes("FINOPS BLOCKED");
+
             if (fileData.pureRefactoredCode && !fileData.reviewPart.includes("Security breach detected")) {
-                commitHtml = `<button onclick="pushToGitHub('${safeId}')" class="bg-slate-900 hover:bg-slate-800 dark:bg-slate-700 dark:hover:bg-slate-600 text-white px-5 rounded-lg text-sm font-medium transition-colors shadow-sm ml-2 whitespace-nowrap">Push to Branch</button>`;
+                commitHtml = `<button onclick="pushToGitHub('${safeId}')" ${isFinOpsBlocked ? 'disabled title="Blocked by FinOps Threshold"' : ''} class="px-5 py-2 rounded-lg text-sm font-medium text-white transition-colors shadow-sm ${isFinOpsBlocked ? 'bg-slate-400 cursor-not-allowed opacity-50' : 'bg-slate-900 hover:bg-slate-800 dark:bg-slate-700 dark:hover:bg-slate-600'} ml-2 whitespace-nowrap">Push to Branch</button>`;
                 
                 if (fileData.ext === 'sql') {
-                    validateHtml = `<button onclick="validateWithBQ('${safeId}')" id="val-btn-${safeId}" class="bg-blue-600 hover:bg-blue-700 text-white px-5 rounded-lg text-sm font-medium transition-colors shadow-sm ml-2 whitespace-nowrap border border-blue-700">Validate BQ</button>`;
+                    validateHtml = `<button onclick="validateWithBQ('${safeId}')" id="val-btn-${safeId}" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm ml-2 whitespace-nowrap border border-blue-700">Validate BQ</button>`;
                 }
             }
 
@@ -669,7 +674,7 @@
                         ${chatHtml}
                         <div class="flex gap-3">
                             <input type="text" id="chat-input-${safeId}" class="flex-grow bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-900 dark:text-white rounded-lg p-2.5 focus:bg-white dark:focus:bg-slate-800 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none text-sm font-medium transition-colors" placeholder="Ask to rewrite logic, explain concepts, or revert a change...">
-                            <button onclick="sendChatMessage('${safeId}', '${fileData.filename}')" id="chat-btn-${safeId}" class="bg-brand-600 hover:bg-brand-700 text-white px-5 rounded-lg text-sm font-medium transition-colors">Send</button>
+                            <button onclick="sendChatMessage('${safeId}', '${fileData.filename}')" id="chat-btn-${safeId}" class="bg-brand-600 hover:bg-brand-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors">Send</button>
                             ${validateHtml}
                             ${commitHtml}
                         </div>
@@ -678,36 +683,18 @@
             `;
 
             const navElement = document.getElementById(`nav-${safeId}`);
-            if (navElement && navElement.classList.contains('active')) activateFile(safeId);
+            if (navElement && navElement.classList.contains('active')) {
+                const canvas = document.getElementById('main-canvas');
+                canvas.innerHTML = renderedFilePayloads[safeId];
+                canvas.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+            }
         }
 
-        function activateFile(fileId) {
+        function activateFile(id) {
             document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active'));
-            const targetNav = document.getElementById(`nav-${fileId}`);
-            if(targetNav) targetNav.classList.add('active');
-
-            const canvas = document.getElementById('main-canvas');
-            canvas.innerHTML = renderedFilePayloads[fileId];
-
-            canvas.querySelectorAll('.markdown-body pre').forEach((block) => {
-                block.classList.add('relative', 'group'); 
-                const btn = document.createElement('button');
-                btn.className = 'copy-btn absolute top-3 right-3 bg-slate-700 hover:bg-brand-600 text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors border border-slate-600 shadow-sm z-10';
-                btn.innerHTML = `Copy Code`;
-                
-                btn.addEventListener('click', async (e) => {
-                    e.stopPropagation(); 
-                    const code = block.querySelector('code').innerText;
-                    await navigator.clipboard.writeText(code);
-                    btn.innerText = `Copied!`;
-                    btn.classList.add('bg-emerald-600');
-                    setTimeout(() => { btn.innerText = `Copy Code`; btn.classList.remove('bg-emerald-600'); }, 2000);
-                });
-                block.appendChild(btn);
-                
-                const codeElement = block.querySelector('code');
-                if (codeElement) hljs.highlightElement(codeElement);
-            });
+            document.getElementById(`nav-${id}`).classList.add('active');
+            document.getElementById('main-canvas').innerHTML = renderedFilePayloads[id];
+            document.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
         }
 
         window.exportMarkdownReport = function() {
