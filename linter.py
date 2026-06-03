@@ -118,6 +118,7 @@ def pre_process_sql(filename, content):
     content = ';\n'.join(new_statements) + (';' if content.strip().endswith(';') else '')
     return content, logs
 
+
 def pre_process_ksh(filename, content):
     logs = []
     fixed_lines = []
@@ -126,6 +127,7 @@ def pre_process_ksh(filename, content):
     needs_set_e = "set -e" not in content and "set -o pipefail" not in content
 
     for idx, line in enumerate(lines, start=1):
+        # Apply physical fixes to KSH so the Diff view populates correctly
         if "bq query" in line:
             logs.append(f"Line {idx:03d}: Forbidden raw 'bq query' invocation found. Refactored to wrapper.")
             line = re.sub(r'bq\s+query\s+--nouse_legacy_sql', 'execute_bq_wrapper', line)
@@ -144,6 +146,7 @@ def pre_process_ksh(filename, content):
 
     if needs_set_e:
         logs.append("Warning: Script lacks strict error handling. Injected 'set -e' and 'set -o pipefail'.")
+        # Ensure it is placed directly after the shebang if it exists
         if fixed_lines and fixed_lines[0].startswith("#!"):
             fixed_lines.insert(1, "set -e")
             fixed_lines.insert(2, "set -o pipefail")
@@ -153,9 +156,11 @@ def pre_process_ksh(filename, content):
 
     return '\n'.join(fixed_lines), logs
 
+
 def pre_process_py(filename, content):
     logs = []
     
+    # 1. Fix DAG_NAME suffix if missing
     dag_name_match = re.search(r'DAG_NAME\s*=\s*["\'](.*?)["\']', content)
     if dag_name_match:
         dag_name = dag_name_match.group(1)
@@ -163,15 +168,19 @@ def pre_process_py(filename, content):
             content = re.sub(r'(DAG_NAME\s*=\s*["\'])(.*?)(["\'])', r'\1\2_VM\3', content)
             logs.append("Fix: Automatically appended mandatory '_VM' suffix to DAG_NAME.")
 
+    # 2. Fix 'timedelta' import if missing
     if "timedelta" in content and "import timedelta" not in content and "datetime, timedelta" not in content:
         content = re.sub(r'from datetime import datetime', r'from datetime import datetime, timedelta', content)
         logs.append("Fix: Injected missing 'timedelta' import into datetime module.")
 
+    # 3. Remove 'catchup' from default_args if it exists
     if re.search(r'[\'"]catchup[\'"]\s*:\s*(True|False)\s*,?', content, re.IGNORECASE):
         content = re.sub(r'[ \t]*[\'"]catchup[\'"]\s*:\s*(True|False)\s*,?\n?', '', content, flags=re.IGNORECASE)
         logs.append("Fix: Removed 'catchup' from default_args (parameter belongs in DAG definition, not args).")
 
+    # 4. Inject missing Airflow parameters directly into the DAG() instantiation
     missing_dag_params = []
+    
     if "catchup=" not in content.replace(" ", ""):
         missing_dag_params.append("catchup=False")
         logs.append("Fix: Injected 'catchup=False' into DAG definition.")
@@ -189,6 +198,7 @@ def pre_process_py(filename, content):
         content = re.sub(r'(dag\s*=\s*DAG\s*\()', fr'\1\n\t\t{injection_string}', content, flags=re.IGNORECASE)
 
     return content, logs
+
 
 def process_file_locally(filename, content):
     security_logs = scan_for_secrets(content)
