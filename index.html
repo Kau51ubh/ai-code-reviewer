@@ -11,7 +11,7 @@
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
-        // Safety guard: Check if Tailwind CDN loaded successfully before configuring
+        // Safety guard: Check if Tailwind Play CDN successfully booted before setting the config
         if (typeof tailwind !== 'undefined') {
             tailwind.config = {
                 darkMode: 'class', 
@@ -82,6 +82,22 @@
 
     <div id="toast-container" style="position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999; display: flex; flex-direction: column; gap: 0.75rem;"></div>
 
+    <!-- Telemetry Log Drawer Panel (Slide-Over UI) -->
+    <div id="auditDrawer" class="fixed inset-y-0 right-0 max-w-full flex pl-10 transform translate-x-full transition-transform duration-500 ease-in-out z-[9999]">
+        <div class="w-screen max-w-2xl bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 p-6 flex flex-col shadow-2xl">
+            <div class="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800 mb-6">
+                <h3 class="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
+                    Platform Audit Trail Log
+                </h3>
+                <button onclick="toggleAuditDrawer(false)" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 font-bold p-2 text-xl">&times;</button>
+            </div>
+            <div class="flex-grow overflow-y-auto space-y-4" id="auditTrailList">
+                <div class="text-center text-slate-500 py-10">Fetching logs...</div>
+            </div>
+        </div>
+    </div>
+
     <header class="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm sticky top-0 z-50 transition-colors">
         <nav class="container mx-auto px-6 py-4 flex items-center justify-between">
             <div class="flex items-center gap-3">
@@ -91,6 +107,9 @@
                 <h1 class="text-xl font-extrabold tracking-tight text-slate-900 dark:text-white">AI Code <span class="font-normal text-slate-500 dark:text-slate-400">Reviewer</span></h1>
             </div>
             <div class="flex items-center gap-4">
+                <button onclick="toggleAuditDrawer(true)" class="flex items-center gap-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 px-3.5 py-1.5 rounded-lg border border-emerald-200 dark:border-emerald-900/30 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-950 transition-colors">
+                    🔍 View Audit Trail
+                </button>
                 <div class="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 px-3 py-1.5 rounded-full border border-slate-200 dark:border-slate-700 hidden md:flex">
                     <span class="relative flex h-2.5 w-2.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-brand-500"></span></span>
                     <span class="text-xs font-semibold text-slate-600 dark:text-slate-300 tracking-wide">Enterprise Guard Engine</span>
@@ -111,18 +130,36 @@
         
         <div class="bg-white dark:bg-slate-900 p-8 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 mb-8 transition-colors">
             <div class="flex items-center gap-3 mb-8">
-                <div class="p-2 bg-brand-50 dark:bg-slate-800 text-brand-600 dark:text-brand-400 rounded-md"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path></svg></div>
+                <div class="p-2 bg-brand-50 dark:bg-slate-800 text-brand-600 dark:text-brand-400 rounded-md">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31-.826-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996-.608 2.296-.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                </div>
                 <h2 class="text-lg font-bold text-slate-800 dark:text-white">Target Configuration</h2>
             </div>
+            
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div><label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">GitHub Repository</label><input type="text" id="repo" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl p-2.5 outline-none text-sm font-medium" value="Kau51ubh/code-reviewer"></div>
-                <div><label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">Feature Branch</label><input type="text" id="branch" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-brand-600 dark:text-brand-400 rounded-xl p-2.5 outline-none font-mono font-semibold text-sm" value="release-v1"></div>
-                <div><label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">Base Branch</label><input type="text" id="base_branch" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-xl p-2.5 outline-none font-mono text-sm" value="main"></div>
+                <div class="group">
+                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">GitHub Repository</label>
+                    <input type="text" id="repo" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl p-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-medium transition-colors" value="Kau51ubh/code-reviewer" placeholder="org/repo">
+                </div>
+                <div class="group">
+                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">Feature Branch</label>
+                    <input type="text" id="branch" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-brand-600 dark:text-brand-400 rounded-xl p-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-mono font-semibold transition-colors" value="release-v1">
+                </div>
+                <div class="group">
+                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">Base Branch</label>
+                    <input type="text" id="base_branch" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-xl p-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-mono transition-colors" value="main">
+                </div>
             </div>
-            <div class="mt-8 flex justify-end pt-6 border-t border-slate-100 dark:border-slate-800"><button id="reviewBtn" onclick="runReview()" class="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white font-medium py-2.5 px-6 rounded-lg transition-all transform hover:-translate-y-0.5 outline-none">Start Analysis</button></div>
+            
+            <div class="mt-8 flex justify-end pt-6 border-t border-slate-100 dark:border-slate-800">
+                <button id="reviewBtn" onclick="runReview()" class="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white font-medium py-2.5 px-6 rounded-lg shadow-sm transition-all duration-200 transform hover:-translate-y-0.5 outline-none">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    Start Analysis
+                </button>
+            </div>
         </div>
 
-        <div id="loading" class="hidden bg-white dark:bg-slate-900 p-10 rounded-2xl border border-slate-200 dark:border-slate-800 mb-8 text-center relative overflow-hidden">
+        <div id="loading" class="hidden bg-white dark:bg-slate-900 p-10 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 mb-8 relative overflow-hidden text-center">
             <div class="absolute top-0 left-0 w-full h-1 bg-slate-100 dark:bg-slate-800">
                 <div class="h-full bg-brand-500 animate-[pulse_2s_ease-in-out_infinite]" style="width: 100%;"></div>
             </div>
@@ -131,7 +168,7 @@
                 <h3 class="text-xl font-bold text-slate-800 dark:text-white mb-2">Analyzing Architecture</h3>
                 <p id="loadingText" class="text-sm font-medium text-brand-600 dark:text-brand-400 h-6">Fetching metadata...</p>
                 
-                <div id="scanDashboard" class="hidden mt-8 w-full max-w-4xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-6 mx-auto">
+                <div id="scanDashboard" class="hidden mt-8 w-full max-w-4xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-6">
                     <div class="grid grid-cols-2 md:grid-cols-4 gap-6 text-center divide-x divide-slate-200 dark:divide-slate-700">
                         <div>
                             <p class="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1">Processed</p>
@@ -169,9 +206,13 @@
                 <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider">FinOps Cost</p>
                 <p id="finopsCost" class="text-lg font-bold text-emerald-600 dark:text-emerald-400">$0.00</p>
             </div>
-            <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-center flex-col text-center">
+            <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-center flex-col text-center relative group">
                 <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider">Data Scanned (BQ)</p>
                 <p id="dataScanned" class="text-lg font-bold text-blue-600 dark:text-blue-400">0.00 GB</p>
+                <!-- FinOps live Quota progress indicator -->
+                <div class="w-24 bg-slate-100 dark:bg-slate-800 h-1.5 rounded-full mt-1 overflow-hidden">
+                    <div id="finopsGauge" class="bg-blue-600 h-full transition-all duration-500" style="width: 0%"></div>
+                </div>
             </div>
             <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-center flex-col text-center">
                 <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider">Files Scanned</p>
@@ -242,6 +283,44 @@
             }
         }
 
+        async function toggleAuditDrawer(show) {
+            const drawer = document.getElementById('auditDrawer');
+            if (show) {
+                drawer.classList.remove('translate-x-full');
+                try {
+                    const response = await fetch('/get_audit_history');
+                    const logs = await response.json();
+                    let html = '';
+                    if (logs.length === 0) {
+                        html = `<div class="text-center text-slate-400 py-6 text-sm">No historic reviews tracked.</div>`;
+                    } else {
+                        logs.forEach(log => {
+                            const badgeColor = log.finops_status === 'PASSED' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800';
+                            html += `
+                                <div class="p-4 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-100 dark:border-slate-700/50 flex flex-col gap-2">
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs font-mono font-bold truncate text-slate-800 dark:text-slate-200">${log.filename}</span>
+                                        <span class="text-[0.6rem] font-bold px-2 py-0.5 rounded ${badgeColor}">${log.finops_status}</span>
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-2 text-[0.65rem] text-slate-500 dark:text-slate-400 font-semibold">
+                                        <p>Operator: <span class="text-slate-700 dark:text-slate-300">${log.user_email}</span></p>
+                                        <p>Cost: <span class="text-emerald-600">$${log.cost.toFixed(4)}</span></p>
+                                        <p>Tokens: <span class="text-purple-600">${log.tokens_used}</span></p>
+                                        <p>Time: <span class="text-slate-700 dark:text-slate-300">${log.formatted_ts}</span></p>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                    }
+                    document.getElementById('auditTrailList').innerHTML = html;
+                } catch(e) {
+                    showToast("Failed to compile trail data.", "error");
+                }
+            } else {
+                drawer.classList.add('translate-x-full');
+            }
+        }
+
         function showToast(message, type = 'success') {
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
@@ -277,6 +356,24 @@
                         btn.classList.remove('bg-white', 'dark:bg-slate-700', 'text-slate-800', 'dark:text-white', 'shadow-sm');
                         btn.classList.add('text-slate-500', 'dark:text-slate-400', 'hover:text-slate-800', 'dark:hover:text-white', 'bg-transparent');
                         view.classList.remove('block');
+                        view.classList.add('hidden');
+                    }
+                }
+            });
+        }
+
+        window.switchLeftTab = function(fileId, tabName) {
+            ['linter', 'schema'].forEach(tab => {
+                const btn = document.getElementById(`tab-btn-${fileId}-${tab}`);
+                const view = document.getElementById(`tab-content-${fileId}-${tab}`);
+                if (btn && view) {
+                    if (tab === tabName) {
+                        btn.classList.add('border-b-2', 'border-blue-500', 'text-blue-600', 'dark:text-blue-400');
+                        btn.classList.remove('text-slate-500', 'dark:text-slate-400');
+                        view.classList.remove('hidden');
+                    } else {
+                        btn.classList.remove('border-b-2', 'border-blue-500', 'text-blue-600', 'dark:text-blue-400');
+                        btn.classList.add('text-slate-500', 'dark:text-slate-400');
                         view.classList.add('hidden');
                     }
                 }
@@ -365,7 +462,18 @@
                     document.getElementById('timeTaken').textContent = actualTime.toFixed(1) + "s";
                     document.getElementById('tokenCount').textContent = actualTokens.toLocaleString();
                     document.getElementById('finopsCost').textContent = "$" + totalCost.toFixed(3);
-                    document.getElementById('dataScanned').textContent = (totalBytes / 1073741824).toFixed(2) + " GB";
+                    
+                    const scannedGB = totalBytes / 1073741824;
+                    document.getElementById('dataScanned').textContent = scannedGB.toFixed(2) + " GB";
+                    
+                    // Quota gauge calculates percentage of the 10GB limit 
+                    const quotaPercent = Math.min((scannedGB / 10) * 100, 100);
+                    const gauge = document.getElementById('finopsGauge');
+                    gauge.style.width = `${quotaPercent}%`;
+                    if(quotaPercent > 80) gauge.className = 'bg-red-500 h-full transition-all duration-500';
+                    else if(quotaPercent > 40) gauge.className = 'bg-amber-500 h-full transition-all duration-500';
+                    else gauge.className = 'bg-blue-600 h-full transition-all duration-500';
+
                     document.getElementById('fileCount').textContent = `${i+1}`;
 
                     renderSingleFile(fileResult, i === 0);
@@ -552,6 +660,7 @@
                 originalCode: fileResult.original_code || '',
                 pureRefactoredCode: pureRefactoredCode,
                 bq_metrics: fileResult.bq_metrics || null,
+                schema_explorer: fileResult.schema_explorer || {},
                 chatHistory: [] 
             };
 
@@ -608,11 +717,38 @@
             let isFinOpsBlocked = data.bq_metrics && data.bq_metrics.message && data.bq_metrics.message.includes("FINOPS BLOCKED");
             
             let fixesHtml = data.localFixesArray.map(f => `<li class="text-sm font-medium text-red-600 dark:text-red-400 break-words border-b border-slate-200 dark:border-slate-700 pb-2">${f}</li>`).join('');
-            // Fix: Add a user friendly placeholder whenfixesHtml is blank to avoid rendering a completely empty panel
+            // Fix: Add a user friendly placeholder when fixesHtml is blank to avoid rendering a completely empty panel
             if (!fixesHtml) {
                 fixesHtml = `<li class="text-sm font-medium text-emerald-600 dark:text-emerald-400">All deterministic checks passed.</li>`;
             }
             
+            // Build interactive side-by-side BigQuery Metadata Schema Tree view
+            let schemaHtml = `<div class="text-xs space-y-4">`;
+            if (Object.keys(data.schema_explorer || {}).length === 0) {
+                schemaHtml += `<p class="text-slate-400 italic">No table definitions discovered in this file.</p>`;
+            } else {
+                for (const [table, columns] of Object.entries(data.schema_explorer)) {
+                    schemaHtml += `
+                        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-3 shadow-sm">
+                            <p class="font-bold text-slate-800 dark:text-slate-200 border-b border-slate-100 dark:border-slate-800 pb-1.5 mb-2 flex items-center gap-1.5 font-mono">
+                                <svg class="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                                ${table}
+                            </p>
+                            <div class="space-y-1 max-h-36 overflow-y-auto">
+                    `;
+                    columns.forEach(col => {
+                        schemaHtml += `
+                            <div class="flex items-center justify-between text-[11px] font-mono hover:bg-slate-50 dark:hover:bg-slate-800 px-1 py-0.5 rounded">
+                                <span class="font-semibold text-slate-700 dark:text-slate-300">${col.name}</span>
+                                <span class="text-slate-400 uppercase text-[9px]">${col.type}</span>
+                            </div>
+                        `;
+                    });
+                    schemaHtml += `</div></div>`;
+                }
+            }
+            schemaHtml += `</div>`;
+
             let bqHtml = '';
             if (data.bq_metrics) {
                 const bqColor = data.bq_metrics.valid 
@@ -674,10 +810,23 @@
                     </div>
                     
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-6">
-                        <div class="bg-slate-50/50 dark:bg-slate-800/50 p-6 rounded-xl border border-slate-100 dark:border-slate-700 h-fit">
-                            <h4 class="font-bold text-slate-900 dark:text-white text-xs uppercase tracking-widest mb-4 flex items-center gap-2"><div class="w-1.5 h-1.5 rounded-full bg-blue-500"></div> Local Linter Engine</h4>
-                            <ul class="space-y-1">${fixesHtml}</ul>
-                            ${bqHtml}
+                        <div class="bg-slate-50/50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-700 h-fit overflow-hidden">
+                            <!-- Toggle Header Tabs between Linter Report & Table Schema Explorer -->
+                            <div class="flex border-b border-slate-200 dark:border-slate-700 text-xs font-bold uppercase tracking-wider bg-slate-100 dark:bg-slate-800/40">
+                                <button onclick="switchLeftTab('${safeId}', 'linter')" id="tab-btn-${safeId}-linter" class="flex-1 py-3 text-center border-b-2 border-blue-500 text-blue-600 dark:text-blue-400">Deterministic Linter</button>
+                                <button onclick="switchLeftTab('${safeId}', 'schema')" id="tab-btn-${safeId}-schema" class="flex-1 py-3 text-center text-slate-500 dark:text-slate-400">Schema Explorer</button>
+                            </div>
+                            
+                            <!-- TabContent 1: Linter Logs -->
+                            <div id="tab-content-${safeId}-linter" class="p-5">
+                                <ul class="space-y-1">${fixesHtml}</ul>
+                                ${bqHtml}
+                            </div>
+                            
+                            <!-- TabContent 2: Structured Table Columns Metadata Search -->
+                            <div id="tab-content-${safeId}-schema" class="p-5 hidden max-h-[350px] overflow-y-auto">
+                                ${schemaHtml}
+                            </div>
                         </div>
                         <div class="bg-slate-50/50 dark:bg-slate-800/50 p-6 rounded-xl border border-slate-100 dark:border-slate-700 markdown-body max-h-[400px] overflow-y-auto">
                             <h4 class="font-bold text-slate-900 dark:text-white text-xs uppercase tracking-widest mb-4 flex items-center gap-2"><div class="w-1.5 h-1.5 rounded-full bg-purple-500"></div> AI Architect Review</h4>
@@ -711,6 +860,7 @@
                         <h4 class="font-bold text-slate-900 dark:text-white text-[0.65rem] uppercase tracking-widest mb-4 text-brand-600 dark:text-brand-400">Interact with Architect</h4>
                         <div class="max-h-48 overflow-y-auto pr-2">${chatHtml}</div>
                         <div class="flex flex-wrap items-center gap-3 mt-2">
+                            <!-- Refactored name of data bindings in onkeydown to prevent NameErrors -->
                             <textarea id="chat-input-${safeId}" rows="2" class="flex-grow min-w-[200px] bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-900 dark:text-white rounded-lg p-2.5 focus:bg-white dark:focus:bg-slate-800 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none text-sm font-medium transition-colors resize-none" placeholder="Ask to rewrite logic, explain concepts... (Shift+Enter for new line)" onkeydown="if(event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendChatMessage('${safeId}', '${data.filename}'); }"></textarea>
                             <button onclick="sendChatMessage('${safeId}', '${data.filename}')" id="chat-btn-${safeId}" class="bg-brand-600 hover:bg-brand-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors">Send</button>
                             ${validateBtn}
