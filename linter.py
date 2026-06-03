@@ -3,7 +3,6 @@ import re
 def scan_for_secrets(content):
     """Shift-Left Security: Hardcoded Secrets Scanner."""
     logs = []
-    # Basic patterns for AWS keys, GCP API keys, and generic passwords
     patterns = {
         "GCP API Key": r'(?i)AIza[0-9A-Za-z-_]{35}',
         "AWS Access Key": r'(?i)AKIA[0-9A-Z]{16}',
@@ -31,11 +30,14 @@ def pre_process_sql(filename, content):
         content = timestamp_pattern.sub('DATETIME(', content)
         logs.append("Fix: Replaced 'TIMESTAMP()' with 'DATETIME()'.")
 
-    # 3. Parameterize ETL_BATCH_SK
-    etl_pattern = re.compile(r'(\betl_batch_sk\b\s*=\s*)[^\s,;)]+', re.IGNORECASE)
-    if etl_pattern.search(content):
-        content = re.sub(r'(\betl_batch_sk\b\s*=\s*)[^\s,;)]+', r'\1${ETL_BATCH_SK}', content, flags=re.IGNORECASE)
-        logs.append("Fix: Parameterized hardcoded 'ETL_BATCH_SK' to '${ETL_BATCH_SK}'.")
+    # 3. Universal ETL_BATCH_SK Parameterization
+    # Matches UPDATE/DELETE assignments: etl_batch_sk = 12345
+    content, n1 = re.subn(r'(\betl_batch_sk\b\s*=\s*)[^\s,;)]+', r'\1${ETL_BATCH_SK}', content, flags=re.IGNORECASE)
+    # Matches SELECT aliases: 12345 AS etl_batch_sk
+    content, n2 = re.subn(r'\b\d+\s+AS\s+etl_batch_sk\b', '${ETL_BATCH_SK} AS etl_batch_sk', content, flags=re.IGNORECASE)
+    
+    if (n1 + n2) > 0:
+        logs.append("Fix: Parameterized hardcoded 'ETL_BATCH_SK' occurrences to '${ETL_BATCH_SK}'.")
         
     # 4. Merge Multiple INSERTs for VALUES
     merge_pattern = re.compile(r"(INSERT\s+INTO\s+([A-Za-z0-9_$.{}]+)(?:\s*\([^)]+\))?\s+VALUES\s*[\s\S]*?);\s*INSERT\s+INTO\s+\2(?:\s*\([^)]+\))?\s+VALUES", re.IGNORECASE)
@@ -115,24 +117,35 @@ def pre_process_ksh(filename, content):
     fixed_lines = []
     lines = content.split('\n')
     
-    if "set -e" not in content and "set -o pipefail" not in content:
-        logs.append("Warning: Script lacks strict error handling. Recommend adding 'set -e' or 'set -o pipefail' at the top.")
+    needs_set_e = "set -e" not in content and "set -o pipefail" not in content
 
     for idx, line in enumerate(lines, start=1):
+        # Apply physical fixes to KSH so the Diff view populates correctly
         if "bq query" in line:
-            logs.append(f"Line {idx:03d}: Forbidden raw 'bq query' invocation found. Refactor to use wrapper functions.")
+            logs.append(f"Line {idx:03d}: Forbidden raw 'bq query' invocation found. Refactored to wrapper.")
+            line = re.sub(r'bq\s+query\s+--nouse_legacy_sql', 'execute_bq_wrapper', line)
+            line = re.sub(r'bq\s+query', 'execute_bq_wrapper', line)
             
-        if any(cmd in line for cmd in ["gcloud", "bq", "gsutil"]) and not line.strip().startswith("#"):
-            if idx < len(lines) and "$?" not in lines[idx] and "set -e" not in content:
-                logs.append(f"Line {idx:03d}: Cloud operator used without immediate Return Code ($?) check.")
-                
         if "echo " in line.lower() and any(secret in line.lower() for secret in ["pass", "pwd", "secret", "token"]):
-            logs.append(f"Line {idx:03d}: Severe Security Breach. Found explicit raw terminal echo containing secrets.")
+            logs.append(f"Line {idx:03d}: Severe Security Breach. Masked explicit secret.")
+            line = re.sub(r'(?i)(password|secret|token|pass|pwd)[\s=:]+[\'"][^\'"]+[\'"]', r'\1="********"', line)
             
         if re.search(r'rm\s+-r[fF]?\s+\$[A-Za-z0-9_]+/?\s*$', line):
-            logs.append(f"Line {idx:03d}: Dangerous deletion pattern detected. Verify variables are populated before running 'rm -rf'.")
+            logs.append(f"Line {idx:03d}: Dangerous deletion pattern detected. Wrapped in safety check.")
+            var_name = re.search(r'\$([A-Za-z0-9_]+)', line).group(1)
+            line = f"if [[ -n \"${var_name}\" ]]; then {line}; fi"
 
         fixed_lines.append(line)
+
+    if needs_set_e:
+        logs.append("Warning: Script lacks strict error handling. Injected 'set -e' and 'set -o pipefail'.")
+        # Ensure it is placed directly after the shebang if it exists
+        if fixed_lines and fixed_lines[0].startswith("#!"):
+            fixed_lines.insert(1, "set -e")
+            fixed_lines.insert(2, "set -o pipefail")
+        else:
+            fixed_lines.insert(0, "set -e")
+            fixed_lines.insert(1, "set -o pipefail")
 
     return '\n'.join(fixed_lines), logs
 
