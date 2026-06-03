@@ -3,6 +3,7 @@ import re
 def scan_for_secrets(content):
     """Shift-Left Security: Hardcoded Secrets Scanner."""
     logs = []
+    # Key patterns for GCP, AWS, and generic configuration strings
     patterns = {
         "GCP API Key": r'(?i)AIza[0-9A-Za-z-_]{35}',
         "AWS Access Key": r'(?i)AKIA[0-9A-Z]{16}',
@@ -57,12 +58,15 @@ def pre_process_sql(filename, content):
         stmt_upper = stmt.upper()
         bypass_pattern = re.compile(r'\bWHERE\s+(TRUE|1\s*=\s*1)\b', re.IGNORECASE)
 
+        # Catch 'SELECT *'
         if re.search(r'\bSELECT\s+\*', stmt_upper):
             logs.append("Warning: 'SELECT *' detected. Columns should be explicitly listed to prevent schema-drift errors.")
 
+        # Catch missing ON in JOINs
         if ' JOIN ' in stmt_upper and ' ON ' not in stmt_upper and 'CROSS JOIN' not in stmt_upper:
             logs.append("Warning: JOIN detected without an 'ON' condition. Verify this is not an accidental Cartesian product.")
 
+        # Missing or Bypassed WHERE in DELETE
         if 'DELETE FROM' in stmt_upper:
             if 'WHERE' not in stmt_upper:
                 stmt = stmt + "\nWHERE <MISSING_FILTER_REQUIRED> /* TODO: Add specific condition */"
@@ -71,6 +75,7 @@ def pre_process_sql(filename, content):
                 stmt = bypass_pattern.sub('WHERE <MISSING_FILTER_REQUIRED> /* TODO: Replace global bypass with condition */', stmt)
                 logs.append("Critical Fix: Overwrote dangerous global bypass in DELETE statement with safe placeholder.")
 
+        # Missing or Bypassed WHERE in UPDATE
         elif 'UPDATE ' in stmt_upper and 'SET ' in stmt_upper:
             if 'WHERE' not in stmt_upper:
                 stmt = stmt + "\nWHERE <MISSING_FILTER_REQUIRED> /* TODO: Add specific condition */"
@@ -79,6 +84,7 @@ def pre_process_sql(filename, content):
                 stmt = bypass_pattern.sub('WHERE <MISSING_FILTER_REQUIRED> /* TODO: Replace global bypass with condition */', stmt)
                 logs.append("Critical Fix: Overwrote dangerous global bypass in UPDATE statement with safe placeholder.")
 
+        # Missing Target Column List in INSERT
         insert_match = re.search(r'(INSERT\s+INTO\s+[A-Za-z0-9_$.{}]+)\s+(SELECT|VALUES)', stmt, re.IGNORECASE)
         if insert_match:
             table_part = insert_match.group(1)
@@ -120,7 +126,6 @@ def pre_process_ksh(filename, content):
     needs_set_e = "set -e" not in content and "set -o pipefail" not in content
 
     for idx, line in enumerate(lines, start=1):
-        # Apply physical fixes to KSH so the Diff view populates correctly
         if "bq query" in line:
             logs.append(f"Line {idx:03d}: Forbidden raw 'bq query' invocation found. Refactored to wrapper.")
             line = re.sub(r'bq\s+query\s+--nouse_legacy_sql', 'execute_bq_wrapper', line)
@@ -139,7 +144,6 @@ def pre_process_ksh(filename, content):
 
     if needs_set_e:
         logs.append("Warning: Script lacks strict error handling. Injected 'set -e' and 'set -o pipefail'.")
-        # Ensure it is placed directly after the shebang if it exists
         if fixed_lines and fixed_lines[0].startswith("#!"):
             fixed_lines.insert(1, "set -e")
             fixed_lines.insert(2, "set -o pipefail")
