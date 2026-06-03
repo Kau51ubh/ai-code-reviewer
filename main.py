@@ -73,6 +73,8 @@ def get_user_identity():
     email = request.headers.get('X-Inbound-User-Email') or request.headers.get('X-Goog-Authenticated-User-Email')
     if email:
         return email.replace('accounts.google.com:', '')
+    
+    # GUARANTEE: Never return empty user_email, otherwise BigQuery insert will fail.
     return "local-developer@company.com"
 
 def resolve_dataset_for_metadata(dataset_name):
@@ -137,7 +139,8 @@ def log_to_bq_analytics(repo, filename, ext, tokens, cost, bypassed, local_issue
             "local_issues_count": local_issues,
             "bq_bytes_processed": bq_bytes,
             "has_secrets": has_secrets,
-            "user_email": user_email or "local-developer@company.com", # Fallback ensures no empty DB fields
+            # GUARANTEE: Enforce fallbacks so BigQuery JSON insert doesn't reject missing parameters
+            "user_email": user_email or "local-developer@company.com",
             "finops_status": finops_status or "PASSED"
         }]
         bq_client.insert_rows_json(BQ_ANALYTICS_TABLE, rows_to_insert)
@@ -168,6 +171,7 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_sc
     
     CRITICAL RULES:
     1. Ensure `etl_batch_sk` is ALWAYS parameterized as `${{ETL_BATCH_SK}}` in all INSERT, UPDATE, SELECT, and DELETE statements you generate.
+    2. NEVER alter the functional output or business logic of the SQL. Do NOT add, remove, or modify window function partitions (`PARTITION BY`), aggregations, or filters. Optimizations MUST preserve the exact same data output as the original query.
     
     LIVE PRODUCTION SCHEMA DATA CONTEXT (Use this to verify column names and references):
     {live_schema}
@@ -260,6 +264,8 @@ def process_single_file():
     content = data.get('content')
     repo_context = data.get('repo_context', 'No additional context.')
     repo_name = data.get('repo_name', 'unknown')
+    
+    # Identify user for analytics tracking
     user_email = get_user_identity()
     
     if not filename or not content:
@@ -332,7 +338,10 @@ def process_single_file():
             "bq_metrics": bq_metrics,
             "tokens": tokens_used,
             "time_taken": time_taken,
-            "original_code": content 
+            "original_code": content,
+            "user_email": user_email,
+            "bq_bytes": bq_bytes,
+            "cost": estimated_cost
         }), 200
 
     except Exception as e:
@@ -425,7 +434,12 @@ def chat_with_code():
 
     try:
         response = model.generate_content(prompt)
-        return jsonify({"reply": response.text}), 200
+        tokens_used = 0
+        try:
+            tokens_used = response.usage_metadata.total_token_count
+        except AttributeError:
+            pass
+        return jsonify({"reply": response.text, "tokens": tokens_used}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
