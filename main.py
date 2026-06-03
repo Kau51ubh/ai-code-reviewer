@@ -10,6 +10,7 @@ from vertexai.generative_models import GenerativeModel
 from google.cloud import bigquery
 from github import Github
 
+# Import our local rule engine
 from linter import process_file_locally
 
 app = Flask(__name__)
@@ -20,6 +21,8 @@ model = GenerativeModel("gemini-2.5-flash")
 bq_client = bigquery.Client()
 
 BQ_ANALYTICS_TABLE = os.environ.get("BQ_ANALYTICS_TABLE", "code_review_analytics.scan_history")
+# 10 GB default FinOps ceiling threshold
+FINOPS_MAX_BYTES_THRESHOLD = int(os.environ.get("FINOPS_MAX_BYTES_THRESHOLD", 10 * 1024 * 1024 * 1024)) 
 
 def load_rules_from_file(filepath):
     try:
@@ -65,21 +68,53 @@ class DummyResponse:
         self.text = text
         self.usage_metadata = DummyUsage()
 
+def get_user_identity():
+    """Extracts authenticated user email from identity gateway headers (Google IAP / Cloud Run context)."""
+    email = request.headers.get('X-Inbound-User-Email') or request.headers.get('X-Goog-Authenticated-User-Email')
+    if email:
+        return email.replace('accounts.google.com:', '')
+    return "local-developer@company.com"
+
+def resolve_dataset_for_metadata(dataset_name):
+    """Translates parameter variables like ${AEDW_DB} back to actual DB target schemas."""
+    clean = dataset_name.replace('${', '').replace('}', '')
+    if clean.upper() in ['AEDW_DB', 'DB_AEDWD2']:
+        return 'DB_AEDWD2'
+    return clean
+
+def inject_live_schema_context(sql_query):
+    """Scans query structure for tables and queries BQ metadata directly to generate live context schemas."""
+    schema_context = "--- LIVE BIGQUERY SCHEMA METADATA ---\n"
+    # Matches dataset.table and ${var}.table patterns
+    table_matches = re.findall(r'\b([A-Za-z0-9_${}]+)\.([A-Za-z0-9_]+)\b', sql_query)
+    
+    processed_tables = set()
+    for dataset, table in table_matches:
+        resolved_dataset = resolve_dataset_for_metadata(dataset)
+        table_key = f"{resolved_dataset}.{table}"
+        
+        if table_key in processed_tables:
+            continue
+            
+        try:
+            table_ref = bq_client.get_table(f"{bq_client.project}.{resolved_dataset}.{table}")
+            fields_desc = [f"  - {f.name} ({f.field_type})" for f in table_ref.schema]
+            schema_context += f"Table: {dataset}.{table} structure columns:\n" + "\n".join(fields_desc) + "\n"
+            processed_tables.add(table_key)
+        except Exception:
+            pass # Ignore tables that do not exist or are temporary
+            
+    return schema_context if len(processed_tables) > 0 else ""
+
 def perform_bq_dry_run(sql_query):
-    """
-    Executes a $0 Dry Run against BigQuery. 
-    Temporarily unparameterizes variables so the BQ engine can validate physical tables.
-    """
+    """Dry run query on actual BQ engine, resolving parameters temporarily to save costs."""
     try:
-        # --- 1. UNPARAMETERIZE STRICTLY FOR VALIDATION ---
         executable_query = sql_query.replace('${AEDW_DB}', 'DB_AEDWD2')
         executable_query = executable_query.replace('${ETL_BATCH_SK}', '12345')
         executable_query = executable_query.replace('${env}', 'dev')
         
-        # --- 2. EXECUTE DRY RUN ---
         job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
         query_job = bq_client.query(executable_query, job_config=job_config)
-        
         return {
             "valid": True,
             "bytes_processed": query_job.total_bytes_processed,
@@ -88,8 +123,8 @@ def perform_bq_dry_run(sql_query):
     except Exception as e:
         return {"valid": False, "bytes_processed": 0, "message": f"BQ Syntax Error: {str(e)}"}
 
-def log_to_bq_analytics(repo, filename, ext, tokens, cost, bypassed, local_issues, bq_bytes, has_secrets):
-    """Asynchronously logs scan metadata to the BigQuery Analytics Dashboard."""
+def log_to_bq_analytics(repo, filename, ext, tokens, cost, bypassed, local_issues, bq_bytes, has_secrets, user_email, finops_status):
+    """Persistently logs all scan activity metadata directly to the BigQuery dashboard dataset."""
     try:
         rows_to_insert = [{
             "timestamp": datetime.datetime.utcnow().isoformat(),
@@ -101,31 +136,27 @@ def log_to_bq_analytics(repo, filename, ext, tokens, cost, bypassed, local_issue
             "ai_bypassed": bypassed,
             "local_issues_count": local_issues,
             "bq_bytes_processed": bq_bytes,
-            "has_secrets": has_secrets
+            "has_secrets": has_secrets,
+            "user_email": user_email or "local-developer@company.com", # Fallback ensures no empty DB fields
+            "finops_status": finops_status or "PASSED"
         }]
         bq_client.insert_rows_json(BQ_ANALYTICS_TABLE, rows_to_insert)
     except Exception as e:
         print(f"Failed to log to BQ Analytics: {e}")
 
 def extract_refactored_code(markdown_text):
-    """Extracts just the raw code block from the AI's Markdown response for BQ validation."""
+    """Robust extractor that separates refactored SQL strings from markdown wrapping blocks."""
     parts = re.split(r'### 🛠️ Final Refactored Code', markdown_text, flags=re.IGNORECASE)
-    if len(parts) > 1:
-        code_section = parts[1]
-        match = re.search(r'```[a-z]*\n(.*?)```', code_section, re.DOTALL | re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-        return code_section.replace('```', '').strip()
-        
-    match = re.search(r'```[a-z]*\n(.*?)```', markdown_text, re.DOTALL | re.IGNORECASE)
+    code_section = parts[1] if len(parts) > 1 else markdown_text
+    match = re.search(r'```[a-z]*\n(.*?)```', code_section, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
-        
-    return markdown_text.strip()
+    return code_section.replace('```', '').strip()
 
-def review_code_with_gemini(filename, pre_cleaned_code, repo_context=""):
+def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_schema=""):
     if not needs_ai_review(filename, pre_cleaned_code):
-        dummy_text = f"### 💡 Advanced Optimizations\nNo advanced architectural bottlenecks detected. AI review bypassed to save tokens (Simple code structure).\n\n### 🛠️ Final Refactored Code\n```sql\n{pre_cleaned_code}\n```"
+        ext = filename.split('.')[-1]
+        dummy_text = f"### 💡 Advanced Optimizations\nNo advanced architectural bottlenecks detected. AI review bypassed to save tokens (Simple code structure).\n\n### 🛠️ Final Refactored Code\n```{ext}\n{pre_cleaned_code}\n```"
         return DummyResponse(dummy_text)
 
     code_lines = pre_cleaned_code.split('\n')
@@ -135,29 +166,42 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context=""):
     You are a Senior Data Architect specializing in Google BigQuery. 
     All SQL syntax, recommendations, and optimizations MUST strictly adhere to BigQuery Standard SQL.
     
+    CRITICAL RULES:
+    1. Ensure `etl_batch_sk` is ALWAYS parameterized as `${{ETL_BATCH_SK}}` in all INSERT, UPDATE, SELECT, and DELETE statements you generate.
+    
+    LIVE PRODUCTION SCHEMA DATA CONTEXT (Use this to verify column names and references):
+    {live_schema}
+    
     REPO CONTEXT (Cross-file dependencies modified in this PR):
     {repo_context}
     
+    The code below has ALREADY been pre-processed locally to fix basic syntax, parameterization, and timestamp functions. 
+    DO NOT mention basic syntax fixes.
+    
     ONLY look for:
-    1. Architectural bottlenecks specific to BigQuery (poor JOINs, cross-joins, inefficient scaling).
-    2. Cross-file dependency issues based on the Repo Context provided above.
+    1. Architectural bottlenecks specific to BigQuery (e.g., poor JOIN strategies, cross-joins, inefficient window functions, failing to filter early, or bad scaling patterns).
+    2. Suggest optimizations for BigQuery query execution plans, slot utilization, and performance.
     
     If no severe bottlenecks exist, output EXACTLY: "No advanced architectural bottlenecks detected."
 
     Format your output strictly with these two headings:
+    
     ### 💡 Advanced Optimizations
-    (Place ALL explanations here)
+    (Place ALL your explanations, reasoning, and context here.)
 
     ### 🛠️ Final Refactored Code
-    (Output ONLY the raw markdown code block here. Start immediately with ```)
+    (Output ONLY the raw markdown code block here. Do NOT place any conversational text under this heading. Start immediately with ```)
     """
     
     specific_instructions = ""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     
-    if filename.endswith('.sql'): specific_instructions = load_rules_from_file(os.path.join(base_dir, 'rules_sql.txt'))
-    elif filename.endswith('.py'): specific_instructions = load_rules_from_file(os.path.join(base_dir, 'rules_py.txt'))
-    elif filename.endswith('.ksh'): specific_instructions = load_rules_from_file(os.path.join(base_dir, 'rules_ksh.txt'))
+    if filename.endswith('.sql'):
+        specific_instructions = load_rules_from_file(os.path.join(base_dir, 'rules_sql.txt'))
+    elif filename.endswith('.py'):
+        specific_instructions = load_rules_from_file(os.path.join(base_dir, 'rules_py.txt'))
+    elif filename.endswith('.ksh'):
+        specific_instructions = load_rules_from_file(os.path.join(base_dir, 'rules_ksh.txt'))
 
     prompt = f"{base_instructions}\n\n{specific_instructions}\n\nCode to review:\n```\n{numbered_code}\n```"
     return model.generate_content(prompt)
@@ -216,12 +260,14 @@ def process_single_file():
     content = data.get('content')
     repo_context = data.get('repo_context', 'No additional context.')
     repo_name = data.get('repo_name', 'unknown')
+    user_email = get_user_identity()
     
     if not filename or not content:
         return jsonify({"error": "Missing file data."}), 400
 
     try:
         start_time = time.time()
+        
         pre_cleaned_code, local_linter_issues = process_file_locally(filename, content)
         has_secrets = any("SECURITY ALERT" in issue for issue in local_linter_issues)
         
@@ -230,44 +276,54 @@ def process_single_file():
         ai_review_markdown = ""
         tokens_used = 0
         is_bypassed = False
+        finops_status = "PASSED"
 
         if has_secrets:
             ai_review_markdown = f"### 💡 Advanced Optimizations\nSecurity breach detected. AI review aborted.\n\n### 🛠️ Final Refactored Code\n```\n{content}\n```"
             is_bypassed = True
+            finops_status = "SECURITY_HALT"
         else:
-            # 1. AI Architect Review (Execute BEFORE BigQuery Dry Run)
-            ai_response_obj = review_code_with_gemini(filename, pre_cleaned_code, repo_context)
+            # 1. Gather schema definitions dynamically from BigQuery metadata
+            live_schema = inject_live_schema_context(pre_cleaned_code) if filename.endswith('.sql') else ""
+            
+            # 2. Get recommendations from AI Architect
+            ai_response_obj = review_code_with_gemini(filename, pre_cleaned_code, repo_context, live_schema)
             ai_review_markdown = ai_response_obj.text
             try:
                 tokens_used = ai_response_obj.usage_metadata.total_token_count
             except AttributeError:
-                is_bypassed = True # Bypassed via DummyResponse
-
-            # 2. BigQuery Validation (On the NEW Refactored Code)
+                is_bypassed = True
+            
+            # 3. Dry run validation over AI-constructed queries
             if filename.endswith('.sql'):
                 refactored_code = extract_refactored_code(ai_review_markdown)
-                
-                # Check for unresolved placeholders in the new code
-                has_placeholders = "<MISSING_FILTER_REQUIRED>" in refactored_code or "(col1, col2, col3)" in refactored_code or "TODO" in refactored_code
+                has_placeholders = any(x in refactored_code for x in ["<MISSING_FILTER_REQUIRED>", "(col1, col2, col3)", "TODO"])
                 
                 if has_placeholders:
                     bq_metrics = {
                         "valid": False,
-                        "message": "Dry Run Bypassed: Refactored code contains mandatory placeholders or TODOs that require manual developer input."
+                        "message": "Dry Run Bypassed: Code contains active structural placeholders requiring manual update."
                     }
+                    finops_status = "CONTAIN_PLACEHOLDERS"
                 else:
-                    # Validate the AI's output against the actual BQ Engine
                     bq_metrics = perform_bq_dry_run(refactored_code)
                     bq_bytes = bq_metrics.get("bytes_processed", 0)
                     
                     if not bq_metrics.get("valid"):
-                        # If the AI hallucinated bad SQL, we flag it in the UI
                         local_linter_issues.append(f"BigQuery Engine Error: {bq_metrics.get('message')}")
-            
+                        finops_status = "SYNTAX_ERROR"
+                    elif bq_bytes > FINOPS_MAX_BYTES_THRESHOLD:
+                        # Cost Control block trigger
+                        finops_status = "FAILED_COST_GUARDRAIL"
+                        bq_metrics["valid"] = False
+                        bq_metrics["message"] = f"⚠️ FINOPS BLOCKED: Query structural plan consumes {bq_bytes / (1024**3):.2f} GB, exceeding environment maximum limit ({FINOPS_MAX_BYTES_THRESHOLD / (1024**3):.2f} GB)."
+                        local_linter_issues.append("FinOps Exception: Execution plan exceeds maximum organizational compute thresholds.")
+
         time_taken = round(time.time() - start_time, 2)
         estimated_cost = (tokens_used / 1000000) * 0.15
 
-        log_to_bq_analytics(repo_name, filename, filename.split('.')[-1], tokens_used, estimated_cost, is_bypassed, len(local_linter_issues), bq_bytes, has_secrets)
+        # Record audit telemetry into DB
+        log_to_bq_analytics(repo_name, filename, filename.split('.')[-1], tokens_used, estimated_cost, is_bypassed, len(local_linter_issues), bq_bytes, has_secrets, user_email, finops_status)
         
         return jsonify({
             "filename": filename,
@@ -282,9 +338,34 @@ def process_single_file():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/validate_bq', methods=['POST'])
+def validate_bq_route():
+    """Manual trigger route used to validate updated SQL strings coming out of interactive chats."""
+    data = request.get_json()
+    code = data.get('code')
+    if not code:
+        return jsonify({"error": "No code provided."}), 400
+    try:
+        if any(x in code for x in ["<MISSING_FILTER_REQUIRED>", "(col1, col2, col3)", "TODO"]):
+            return jsonify({
+                "valid": False, 
+                "message": "Dry Run Bypassed: Code contains active structural placeholders."
+            }), 200
+
+        bq_metrics = perform_bq_dry_run(code)
+        bq_bytes = bq_metrics.get("bytes_processed", 0)
+        
+        if bq_metrics.get("valid") and bq_bytes > FINOPS_MAX_BYTES_THRESHOLD:
+            bq_metrics["valid"] = False
+            bq_metrics["message"] = f"⚠️ FINOPS BLOCKED: Query structural plan consumes {bq_bytes / (1024**3):.2f} GB, exceeding organizational maximum limit."
+            
+        return jsonify(bq_metrics), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/commit', methods=['POST'])
 def commit_to_github():
-    """Push to Branch functionality."""
+    """Pushes the accepted modifications directly to the specified branch branch."""
     data = request.get_json()
     repo_name = data.get('repo')
     branch = data.get('branch')
@@ -345,31 +426,6 @@ def chat_with_code():
     try:
         response = model.generate_content(prompt)
         return jsonify({"reply": response.text}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/validate_bq', methods=['POST'])
-def validate_bq_route():
-    """On-demand endpoint to run a BQ Dry Run after a user modifies code via chat."""
-    data = request.get_json()
-    code = data.get('code')
-    
-    if not code:
-        return jsonify({"error": "No code provided."}), 400
-
-    try:
-        # Check for placeholders first
-        has_placeholders = "<MISSING_FILTER_REQUIRED>" in code or "(col1, col2, col3)" in code or "TODO" in code
-        if has_placeholders:
-            return jsonify({
-                "valid": False,
-                "message": "Dry Run Bypassed: Code contains mandatory placeholders or TODOs that require manual developer input."
-            }), 200
-
-        # Execute the dry run
-        bq_metrics = perform_bq_dry_run(code)
-        return jsonify(bq_metrics), 200
-        
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
