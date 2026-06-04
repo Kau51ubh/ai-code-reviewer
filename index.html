@@ -131,7 +131,7 @@
         <div class="bg-white dark:bg-slate-900 p-8 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 mb-8 transition-colors">
             <div class="flex items-center gap-3 mb-8">
                 <div class="p-2 bg-brand-50 dark:bg-slate-800 text-brand-600 dark:text-brand-400 rounded-md">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31-.826-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996-.608 2.296-.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
                 </div>
                 <h2 class="text-lg font-bold text-slate-800 dark:text-white">Target Configuration</h2>
             </div>
@@ -168,7 +168,7 @@
                 <h3 class="text-xl font-bold text-slate-800 dark:text-white mb-2">Analyzing Architecture</h3>
                 <p id="loadingText" class="text-sm font-medium text-brand-600 dark:text-brand-400 h-6">Fetching metadata...</p>
                 
-                <div id="scanDashboard" class="hidden mt-8 w-full max-w-4xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-6">
+                <div id="scanDashboard" class="hidden mt-8 w-full max-w-4xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-6 mx-auto">
                     <div class="grid grid-cols-2 md:grid-cols-4 gap-6 text-center divide-x divide-slate-200 dark:divide-slate-700">
                         <div>
                             <p class="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1">Processed</p>
@@ -333,7 +333,7 @@
 
         window.filterSidebar = function(status) {
             ['all', 'issues', 'autofix', 'clean'].forEach(id => {
-                const btn = document.getElementById(`filter-${id}`);
+                const btn = document.getElementById('filter-' + id);
                 if(id === status) btn.classList.add('bg-white', 'dark:bg-slate-700', 'shadow-sm');
                 else btn.classList.remove('bg-white', 'dark:bg-slate-700', 'shadow-sm');
             });
@@ -363,7 +363,7 @@
         }
 
         window.switchLeftTab = function(fileId, tabName) {
-            ['linter', 'schema'].forEach(tab => {
+            ['linter', 'schema', 'preview'].forEach(tab => {
                 const btn = document.getElementById(`tab-btn-${fileId}-${tab}`);
                 const view = document.getElementById(`tab-content-${fileId}-${tab}`);
                 if (btn && view) {
@@ -378,6 +378,53 @@
                     }
                 }
             });
+            
+            if (tabName === 'preview') {
+                generateQueryPreview(fileId);
+            }
+        }
+
+        async function generateQueryPreview(safeId) {
+            const fileData = window.fileDataStore[safeId];
+            const container = document.getElementById(`tab-content-${safeId}-preview`);
+            container.innerHTML = `<div class="flex items-center justify-center py-10 gap-2 text-sm text-slate-500"><div class="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent"></div> Generating AI Mock Preview...</div>`;
+            
+            try {
+                const response = await fetch('/generate_mock_data', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: fileData.pureRefactoredCode })
+                });
+                const rows = await response.json();
+                
+                if (rows.length === 0) {
+                    container.innerHTML = `<p class="text-xs text-slate-400 italic">No output columns parsed.</p>`;
+                    return;
+                }
+                
+                const headers = Object.keys(rows[0]);
+                let tableHtml = `
+                    <div class="overflow-x-auto border border-slate-100 dark:border-slate-800 rounded-xl">
+                        <table class="min-w-full divide-y divide-slate-100 dark:divide-slate-800 text-left text-[11px] font-mono">
+                            <thead class="bg-slate-50 dark:bg-slate-800 text-slate-500">
+                                <tr>
+                                    ${headers.map(h => `<th class="px-3 py-2 font-bold">${h}</th>`).join('')}
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300">
+                                ${rows.map(row => `
+                                    <tr>
+                                        ${headers.map(h => `<td class="px-3 py-2 font-normal truncate max-w-[120px]" title="${row[h]}">${row[h]}</td>`).join('')}
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+                container.innerHTML = tableHtml;
+            } catch(e) {
+                container.innerHTML = `<p class="text-xs text-red-500">Failed to render mock preview.</p>`;
+            }
         }
 
         function startLoadingText(overrideText = null) {
@@ -661,6 +708,8 @@
                 pureRefactoredCode: pureRefactoredCode,
                 bq_metrics: fileResult.bq_metrics || null,
                 schema_explorer: fileResult.schema_explorer || {},
+                airflow_tasks: fileResult.airflow_tasks || {},
+                scorecard: fileResult.scorecard || { performance: 100, cost_efficiency: 100, security: 100, compliance: 100 },
                 chatHistory: [] 
             };
 
@@ -722,32 +771,58 @@
                 fixesHtml = `<li class="text-sm font-medium text-emerald-600 dark:text-emerald-400">All deterministic checks passed.</li>`;
             }
             
-            // Build interactive side-by-side BigQuery Metadata Schema Tree view
-            let schemaHtml = `<div class="text-xs space-y-4">`;
-            if (Object.keys(data.schema_explorer || {}).length === 0) {
-                schemaHtml += `<p class="text-slate-400 italic">No table definitions discovered in this file.</p>`;
+            // Build interactive side-by-side BigQuery Metadata Schema Tree view OR Airflow task list
+            let schemaHtml = '';
+            if (data.ext === 'py') {
+                schemaHtml = `<div class="text-xs space-y-4">
+                    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-3 shadow-sm">
+                        <p class="font-bold text-slate-800 dark:text-slate-200 border-b border-slate-100 dark:border-slate-800 pb-1.5 mb-2 flex items-center gap-1.5 font-mono">
+                            Airflow Task Pipeline
+                        </p>
+                        <div class="space-y-1">
+                            ${data.airflow_tasks.tasks && data.airflow_tasks.tasks.length > 0 
+                                ? data.airflow_tasks.tasks.map(t => `<div class="px-2 py-1 bg-slate-50 dark:bg-slate-800 rounded font-mono text-[10px] text-slate-700 dark:text-slate-300">${t.name} (${t.type})</div>`).join('') 
+                                : '<p class="text-slate-400 italic">No tasks discovered.</p>'}
+                        </div>
+                    </div>
+                    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-3 shadow-sm">
+                        <p class="font-bold text-slate-800 dark:text-slate-200 border-b border-slate-100 dark:border-slate-800 pb-1.5 mb-2 flex items-center gap-1.5 font-mono">
+                            Task Lineage Flow
+                        </p>
+                        <div class="space-y-1 font-mono text-[10px] text-slate-600 dark:text-slate-400">
+                            ${data.airflow_tasks.lineage && data.airflow_tasks.lineage.length > 0 
+                                ? data.airflow_tasks.lineage.map(l => `<div class="px-2 py-1 bg-slate-50 dark:bg-slate-800 rounded">${l}</div>`).join('') 
+                                : '<p class="text-slate-400 italic">No task mapping declared.</p>'}
+                        </div>
+                    </div>
+                </div>`;
             } else {
-                for (const [table, columns] of Object.entries(data.schema_explorer)) {
-                    schemaHtml += `
-                        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-3 shadow-sm">
-                            <p class="font-bold text-slate-800 dark:text-slate-200 border-b border-slate-100 dark:border-slate-800 pb-1.5 mb-2 flex items-center gap-1.5 font-mono">
-                                <svg class="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
-                                ${table}
-                            </p>
-                            <div class="space-y-1 max-h-36 overflow-y-auto">
-                    `;
-                    columns.forEach(col => {
+                schemaHtml = `<div class="text-xs space-y-4">`;
+                if (Object.keys(data.schema_explorer || {}).length === 0) {
+                    schemaHtml += `<p class="text-slate-400 italic">No table definitions discovered in this file.</p>`;
+                } else {
+                    for (const [table, columns] of Object.entries(data.schema_explorer)) {
                         schemaHtml += `
-                            <div class="flex items-center justify-between text-[11px] font-mono hover:bg-slate-50 dark:hover:bg-slate-800 px-1 py-0.5 rounded">
-                                <span class="font-semibold text-slate-700 dark:text-slate-300">${col.name}</span>
-                                <span class="text-slate-400 uppercase text-[9px]">${col.type}</span>
-                            </div>
+                            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-3 shadow-sm">
+                                <p class="font-bold text-slate-800 dark:text-slate-200 border-b border-slate-100 dark:border-slate-800 pb-1.5 mb-2 flex items-center gap-1.5 font-mono">
+                                    <svg class="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                                    ${table}
+                                </p>
+                                <div class="space-y-1 max-h-36 overflow-y-auto">
                         `;
-                    });
-                    schemaHtml += `</div></div>`;
+                        columns.forEach(col => {
+                            schemaHtml += `
+                                <div class="flex items-center justify-between text-[11px] font-mono hover:bg-slate-50 dark:hover:bg-slate-800 px-1 py-0.5 rounded">
+                                    <span class="font-semibold text-slate-700 dark:text-slate-300">${col.name}</span>
+                                    <span class="text-slate-400 uppercase text-[9px]">${col.type}</span>
+                                </div>
+                            `;
+                        });
+                        schemaHtml += `</div></div>`;
+                    }
                 }
+                schemaHtml += `</div>`;
             }
-            schemaHtml += `</div>`;
 
             let bqHtml = '';
             if (data.bq_metrics) {
@@ -802,19 +877,43 @@
                 });
             }
 
+            // Define scorecard colors helper inside renderMainCanvasHTML to fix Javascript ReferenceError crash
+            const scoreColor = (val) => val > 80 ? 'text-emerald-500 border-emerald-500' : val > 50 ? 'text-amber-500 border-amber-500' : 'text-red-500 border-red-500';
+
             renderedFilePayloads[safeId] = `
                 <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-6 md:p-8 animate-[fadeIn_0.3s_ease-out]">
                     <div class="flex items-center justify-between mb-8 border-b border-slate-100 dark:border-slate-800 pb-4">
                         <h2 class="text-xl font-mono font-bold text-slate-800 dark:text-white">${data.filename}</h2>
                         ${data.badgeHtml.replace('text-[0.65rem]', 'text-xs px-3 py-1')}
                     </div>
+
+                    <!-- AI Optimization Scorecard Section - Refined, Sleeker Indicator Circles -->
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                        <div class="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 p-4 rounded-xl flex items-center justify-between">
+                            <div><p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Performance</p><p class="text-xl font-black mt-1 ${scoreColor(data.scorecard.performance)}">${data.scorecard.performance}/100</p></div>
+                            <div class="w-7 h-7 rounded-full border-2 ${scoreColor(data.scorecard.performance)} flex items-center justify-center font-bold text-[10px] shrink-0">🚀</div>
+                        </div>
+                        <div class="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 p-4 rounded-xl flex items-center justify-between">
+                            <div><p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">FinOps Safety</p><p class="text-xl font-black mt-1 ${scoreColor(data.scorecard.cost_efficiency)}">${data.scorecard.cost_efficiency}/100</p></div>
+                            <div class="w-7 h-7 rounded-full border-2 ${scoreColor(data.scorecard.cost_efficiency)} flex items-center justify-center font-bold text-[10px] shrink-0">💎</div>
+                        </div>
+                        <div class="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 p-4 rounded-xl flex items-center justify-between">
+                            <div><p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Security Guard</p><p class="text-xl font-black mt-1 ${scoreColor(data.scorecard.security)}">${data.scorecard.security}/100</p></div>
+                            <div class="w-7 h-7 rounded-full border-2 ${scoreColor(data.scorecard.security)} flex items-center justify-center font-bold text-[10px] shrink-0">🔒</div>
+                        </div>
+                        <div class="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 p-4 rounded-xl flex items-center justify-between">
+                            <div><p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Compliance</p><p class="text-xl font-black mt-1 ${scoreColor(data.scorecard.compliance)}">${data.scorecard.compliance}/100</p></div>
+                            <div class="w-7 h-7 rounded-full border-2 ${scoreColor(data.scorecard.compliance)} flex items-center justify-center font-bold text-[10px] shrink-0">📋</div>
+                        </div>
+                    </div>
                     
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-6">
                         <div class="bg-slate-50/50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-700 h-fit overflow-hidden">
-                            <!-- Toggle Header Tabs between Linter Report & Table Schema Explorer -->
+                            <!-- Toggle Header Tabs between Linter Report, Table Schema, & AI Preview -->
                             <div class="flex border-b border-slate-200 dark:border-slate-700 text-xs font-bold uppercase tracking-wider bg-slate-100 dark:bg-slate-800/40">
                                 <button onclick="switchLeftTab('${safeId}', 'linter')" id="tab-btn-${safeId}-linter" class="flex-1 py-3 text-center border-b-2 border-blue-500 text-blue-600 dark:text-blue-400">Deterministic Linter</button>
-                                <button onclick="switchLeftTab('${safeId}', 'schema')" id="tab-btn-${safeId}-schema" class="flex-1 py-3 text-center text-slate-500 dark:text-slate-400">Schema Explorer</button>
+                                <button onclick="switchLeftTab('${safeId}', 'schema')" id="tab-btn-${safeId}-schema" class="flex-1 py-3 text-center text-slate-500 dark:text-slate-400">${data.ext === 'py' ? 'Airflow Task Graph' : 'Schema Explorer'}</button>
+                                ${data.ext === 'sql' ? `<button onclick="switchLeftTab('${safeId}', 'preview')" id="tab-btn-${safeId}-preview" class="flex-1 py-3 text-center text-slate-500 dark:text-slate-400">AI Data Preview</button>` : ''}
                             </div>
                             
                             <!-- TabContent 1: Linter Logs -->
@@ -826,6 +925,11 @@
                             <!-- TabContent 2: Structured Table Columns Metadata Search -->
                             <div id="tab-content-${safeId}-schema" class="p-5 hidden max-h-[350px] overflow-y-auto">
                                 ${schemaHtml}
+                            </div>
+
+                            <!-- TabContent 3: Structured AI Mock Preview -->
+                            <div id="tab-content-${safeId}-preview" class="p-5 hidden max-h-[350px] overflow-y-auto">
+                                <!-- Async generated mock table loaded here -->
                             </div>
                         </div>
                         <div class="bg-slate-50/50 dark:bg-slate-800/50 p-6 rounded-xl border border-slate-100 dark:border-slate-700 markdown-body max-h-[400px] overflow-y-auto">
@@ -860,7 +964,6 @@
                         <h4 class="font-bold text-slate-900 dark:text-white text-[0.65rem] uppercase tracking-widest mb-4 text-brand-600 dark:text-brand-400">Interact with Architect</h4>
                         <div class="max-h-48 overflow-y-auto pr-2">${chatHtml}</div>
                         <div class="flex flex-wrap items-center gap-3 mt-2">
-                            <!-- Refactored name of data bindings in onkeydown to prevent NameErrors -->
                             <textarea id="chat-input-${safeId}" rows="2" class="flex-grow min-w-[200px] bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-900 dark:text-white rounded-lg p-2.5 focus:bg-white dark:focus:bg-slate-800 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none text-sm font-medium transition-colors resize-none" placeholder="Ask to rewrite logic, explain concepts... (Shift+Enter for new line)" onkeydown="if(event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendChatMessage('${safeId}', '${data.filename}'); }"></textarea>
                             <button onclick="sendChatMessage('${safeId}', '${data.filename}')" id="chat-btn-${safeId}" class="bg-brand-600 hover:bg-brand-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors">Send</button>
                             ${validateBtn}
