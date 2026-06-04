@@ -118,7 +118,6 @@ def pre_process_sql(filename, content):
     content = ';\n'.join(new_statements) + (';' if content.strip().endswith(';') else '')
     return content, logs
 
-
 def pre_process_ksh(filename, content):
     logs = []
     fixed_lines = []
@@ -155,7 +154,6 @@ def pre_process_ksh(filename, content):
             fixed_lines.insert(1, "set -o pipefail")
 
     return '\n'.join(fixed_lines), logs
-
 
 def pre_process_py(filename, content):
     logs = []
@@ -198,7 +196,6 @@ def pre_process_py(filename, content):
         content = re.sub(r'(dag\s*=\s*DAG\s*\()', fr'\1\n\t\t{injection_string}', content, flags=re.IGNORECASE)
 
     return content, logs
-
 
 def process_file_locally(filename, content):
     security_logs = scan_for_secrets(content)
