@@ -11,7 +11,6 @@
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
-        // Safety guard: Check if Tailwind Play CDN successfully booted before setting the config
         if (typeof tailwind !== 'undefined') {
             tailwind.config = {
                 darkMode: 'class', 
@@ -23,6 +22,17 @@
                         },
                         colors: {
                             brand: { 50: '#eff6ff', 100: '#dbeafe', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 900: '#1e3a8a' }
+                        },
+                        animation: {
+                            'blob': 'blob 7s infinite',
+                        },
+                        keyframes: {
+                            blob: {
+                                '0%': { transform: 'translate(0px, 0px) scale(1)' },
+                                '33%': { transform: 'translate(30px, -50px) scale(1.1)' },
+                                '66%': { transform: 'translate(-20px, 20px) scale(0.9)' },
+                                '100%': { transform: 'translate(0px, 0px) scale(1)' },
+                            }
                         }
                     }
                 }
@@ -35,7 +45,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jsdiff/5.1.0/diff.min.js"></script>
     
-    <!-- Monaco Editor Configuration -->
     <script>var require = { paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.38.0/min/vs' } };</script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.38.0/min/vs/loader.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.38.0/min/vs/editor/editor.main.nls.js"></script>
@@ -58,12 +67,6 @@
         .markdown-body p code, .markdown-body li code { background-color: #f1f5f9; color: #ea580c; border: 1px solid #e2e8f0; padding: 0.15rem 0.4rem; border-radius: 0.375rem; font-family: 'Fira Code', monospace; font-size: 0.85em; }
         .dark .markdown-body p code, .dark .markdown-body li code { background-color: #1e293b; border-color: #334155; }
         .markdown-body pre { background-color: #0f172a; border-radius: 0.75rem; padding: 1.5rem; margin-bottom: 2rem; overflow-x: auto; border: 1px solid #1e293b; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
-        .markdown-body pre::-webkit-scrollbar { height: 8px; }
-        .markdown-body pre::-webkit-scrollbar-track { background: #0f172a; border-radius: 4px; }
-        .markdown-body pre::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
-        .markdown-body pre code { font-family: 'Fira Code', monospace; font-size: 0.85rem; line-height: 1.6; color: #e2e8f0; display: block; }
-        .copy-btn { opacity: 0; transition: all 0.2s ease-in-out; }
-        pre:hover .copy-btn { opacity: 1; }
         .loader-ring { width: 64px; height: 64px; position: relative; margin: 0 auto; }
         .loader-ring div { box-sizing: border-box; display: block; position: absolute; width: 54px; height: 54px; margin: 5px; border: 4px solid transparent; border-radius: 50%; animation: loader-ring 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite; border-color: #3b82f6 transparent transparent transparent; }
         .loader-ring div:nth-child(1) { animation-delay: -0.45s; }
@@ -76,90 +79,152 @@
         .sidebar-item:not(.active):hover { background-color: #f8fafc; border-color: #cbd5e1; }
         .dark .sidebar-item:not(.active):hover { background-color: #334155; border-color: #475569; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        /* Fix for scrollbars taking up space */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; }
     </style>
 </head>
-<body class="min-h-screen text-slate-800 dark:text-slate-200 selection:bg-brand-100 selection:text-brand-900 flex flex-col transition-colors">
+<body class="min-h-screen text-slate-800 dark:text-slate-200 selection:bg-brand-100 selection:text-brand-900 flex flex-col transition-colors relative z-0">
 
-    <div id="toast-container" style="position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999; display: flex; flex-direction: column; gap: 0.75rem;"></div>
+    <div class="fixed inset-0 w-full h-full overflow-hidden pointer-events-none -z-10">
+        <div class="absolute top-[-10%] left-[-10%] w-96 h-96 bg-brand-400/20 dark:bg-brand-600/20 rounded-full mix-blend-multiply filter blur-3xl opacity-70 animate-blob"></div>
+        <div class="absolute top-[20%] right-[-5%] w-96 h-96 bg-purple-400/20 dark:bg-purple-600/20 rounded-full mix-blend-multiply filter blur-3xl opacity-70 animate-blob animation-delay-2000"></div>
+        <div class="absolute bottom-[-20%] left-[20%] w-96 h-96 bg-emerald-400/20 dark:bg-emerald-600/20 rounded-full mix-blend-multiply filter blur-3xl opacity-70 animate-blob animation-delay-4000"></div>
+    </div>
 
-    <!-- Telemetry Log Drawer Panel (Slide-Over UI) -->
-    <div id="auditDrawer" class="fixed inset-y-0 right-0 max-w-full flex pl-10 transform translate-x-full transition-transform duration-500 ease-in-out z-[9999]">
-        <div class="w-screen max-w-2xl bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 p-6 flex flex-col shadow-2xl">
-            <div class="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800 mb-6">
+    <div id="toast-container" style="position: fixed; top: 1.5rem; right: 1.5rem; z-index: 999999; display: flex; flex-direction: column; gap: 0.75rem;"></div>
+
+    <div id="auditDrawer" style="display: none;" class="fixed inset-y-0 right-0 w-full md:w-auto pl-10 transform translate-x-full transition-transform duration-500 ease-in-out z-[9999]">
+        <div class="w-screen max-w-2xl bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 p-6 flex flex-col shadow-2xl h-full overflow-hidden">
+            <div class="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800 mb-6 shrink-0">
                 <h3 class="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
                     <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
                     Platform Audit Trail Log
                 </h3>
-                <button onclick="toggleAuditDrawer(false)" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 font-bold p-2 text-xl">&times;</button>
+                <button onclick="toggleAuditDrawer(false)" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 font-bold p-2 text-xl cursor-pointer">&times;</button>
             </div>
-            <div class="flex-grow overflow-y-auto space-y-4" id="auditTrailList">
+            <div class="flex-grow overflow-y-auto space-y-4 pr-2" id="auditTrailList">
                 <div class="text-center text-slate-500 py-10">Fetching logs...</div>
             </div>
         </div>
     </div>
 
-    <header class="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm sticky top-0 z-50 transition-colors">
-        <nav class="container mx-auto px-6 py-4 flex items-center justify-between">
+    <div id="scorecardModal" style="display: none;" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm items-center justify-center z-[99999] transition-all duration-300">
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-4xl rounded-2xl shadow-2xl p-6 md:p-8 transform scale-95 transition-all duration-300 mx-4 overflow-y-auto max-h-[90vh]">
+            <div class="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800 mb-6">
+                <h3 class="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    📊 Architecture Optimization Scorecard
+                </h3>
+                <button onclick="closeScorecardModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 font-bold p-2 text-xl cursor-pointer">&times;</button>
+            </div>
+            <div id="scorecardGridContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8"></div>
+            <div class="bg-slate-50 dark:bg-slate-800/40 rounded-xl p-5 border border-slate-100 dark:border-slate-800">
+                <h4 class="text-sm font-bold text-slate-800 dark:text-white mb-3 flex items-center gap-2">📋 Grading Rules & Guidelines</h4>
+                <div class="space-y-2.5 text-xs text-slate-600 dark:text-slate-400">
+                    <p>⚡ <strong>Performance:</strong> Deducts points for slow, Cartesian, or schema-drift patterns such as list wildcards.</p>
+                    <p>💰 <strong>FinOps Safety:</strong> Deducts 10 points per linter issue flagged. Helps prevent massive cost overhead on unpartitioned tables.</p>
+                    <p>🔒 <strong>Security Guard:</strong> Fails instantly (50% deduction) if plain-text password tokens or security-risk variables are detected.</p>
+                    <p>📏 <strong>Compliance:</strong> Enforces standard platform naming conventions, such as trailing DAG suffixes and parameter constraints.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="batchPushModal" style="display: none;" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm items-center justify-center z-[9990] transition-all duration-300">
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-lg rounded-2xl shadow-2xl p-6 md:p-8 mx-4">
+            <div class="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800 mb-4">
+                <h3 class="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <svg class="w-5 h-5 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path></svg>
+                    Batch Push to GitHub
+                </h3>
+                <button onclick="closeBatchPushModal()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 font-bold p-2 text-xl cursor-pointer">&times;</button>
+            </div>
+            <p class="text-sm text-slate-500 mb-4">Select the reviewed scripts you want to commit to the repository.</p>
+            <div id="batchPushList" class="max-h-60 overflow-y-auto space-y-2 mb-6 pr-2"></div>
+            <button onclick="executeBatchPush()" id="batchPushConfirmBtn" class="w-full bg-brand-600 hover:bg-brand-700 text-white font-bold py-3 px-4 rounded-xl shadow-md transition-all duration-200 cursor-pointer">
+                Commit Selected Files
+            </button>
+        </div>
+    </div>
+
+    <header class="bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 shadow-sm sticky top-0 z-50 transition-colors">
+        <nav class="container mx-auto px-6 py-4 flex items-center justify-between relative z-10">
             <div class="flex items-center gap-3">
-                <div class="bg-brand-600 text-white p-2 rounded-lg shadow-md shadow-brand-500/20">
+                <div class="bg-gradient-to-br from-brand-500 to-indigo-600 text-white p-2 rounded-lg shadow-md shadow-brand-500/20">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
                 </div>
                 <h1 class="text-xl font-extrabold tracking-tight text-slate-900 dark:text-white">AI Code <span class="font-normal text-slate-500 dark:text-slate-400">Reviewer</span></h1>
             </div>
             <div class="flex items-center gap-4">
-                <button onclick="toggleAuditDrawer(true)" class="flex items-center gap-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 px-3.5 py-1.5 rounded-lg border border-emerald-200 dark:border-emerald-900/30 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-950 transition-colors">
+                <button onclick="toggleAuditDrawer(true)" class="flex items-center gap-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 px-3.5 py-1.5 rounded-lg border border-emerald-200 dark:border-emerald-900/30 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-950 transition-colors cursor-pointer">
                     🔍 View Audit Trail
                 </button>
-                <div class="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 px-3 py-1.5 rounded-full border border-slate-200 dark:border-slate-700 hidden md:flex">
-                    <span class="relative flex h-2.5 w-2.5"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-brand-500"></span></span>
-                    <span class="text-xs font-semibold text-slate-600 dark:text-slate-300 tracking-wide">Enterprise Guard Engine</span>
-                </div>
-                <!-- Identity & IAM Badge -->
                 <div class="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-full border border-slate-200 dark:border-slate-700">
-                    <div class="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs font-bold" id="user-badge-initial">U</div>
-                    <span class="text-xs font-semibold text-slate-600 dark:text-slate-300 pr-2" id="user-badge-email">Authentication Pending...</span>
+                    <div class="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs font-bold shrink-0" id="user-badge-initial">U</div>
+                    <span class="text-xs font-semibold text-slate-600 dark:text-slate-300 pr-2 truncate max-w-[120px] md:max-w-[150px] cursor-help" id="user-badge-email" title="Authentication Pending...">Authentication Pending...</span>
                 </div>
-                <button onclick="toggleDarkMode()" class="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 transition-colors hover:bg-slate-200 dark:hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500">
+                <button onclick="toggleDarkMode()" class="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 transition-colors hover:bg-slate-200 dark:hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer">
                     🌙 / ☀️
                 </button>
             </div>
         </nav>
     </header>
 
-    <main class="container mx-auto px-6 py-10 max-w-7xl flex-grow">
+    <main class="container mx-auto px-6 py-10 max-w-7xl flex-grow relative z-10">
         
-        <div class="bg-white dark:bg-slate-900 p-8 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 mb-8 transition-colors">
-            <div class="flex items-center gap-3 mb-8">
-                <div class="p-2 bg-brand-50 dark:bg-slate-800 text-brand-600 dark:text-brand-400 rounded-md">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+        <div class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-8 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 mb-8 transition-colors">
+            <div class="flex items-center justify-between mb-8">
+                <div class="flex items-center gap-3">
+                    <div class="p-2 bg-brand-50 dark:bg-slate-800 text-brand-600 dark:text-brand-400 rounded-md">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31-2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                    </div>
+                    <h2 class="text-lg font-bold text-slate-800 dark:text-white">Target Configuration</h2>
                 </div>
-                <h2 class="text-lg font-bold text-slate-800 dark:text-white">Target Configuration</h2>
-            </div>
-            
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div class="group">
-                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">GitHub Repository</label>
-                    <input type="text" id="repo" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl p-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-medium transition-colors" value="Kau51ubh/code-reviewer" placeholder="org/repo">
-                </div>
-                <div class="group">
-                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">Feature Branch</label>
-                    <input type="text" id="branch" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-brand-600 dark:text-brand-400 rounded-xl p-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-mono font-semibold transition-colors" value="release-v1">
-                </div>
-                <div class="group">
-                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">Base Branch</label>
-                    <input type="text" id="base_branch" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-xl p-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-mono transition-colors" value="main">
-                </div>
-            </div>
-            
-            <div class="mt-8 flex justify-end pt-6 border-t border-slate-100 dark:border-slate-800">
-                <button id="reviewBtn" onclick="runReview()" class="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white font-medium py-2.5 px-6 rounded-lg shadow-sm transition-all duration-200 transform hover:-translate-y-0.5 outline-none">
+                <button id="reviewBtn" onclick="runReview()" class="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white font-medium py-2.5 px-6 rounded-lg shadow-md shadow-brand-500/20 transition-all duration-200 transform hover:-translate-y-0.5 outline-none cursor-pointer">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                     Start Analysis
                 </button>
             </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="group relative" id="dropdown-container-repo">
+                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">GitHub Repository</label>
+                    <div class="relative">
+                        <input type="text" id="repo" onfocus="showDropdown('repo')" oninput="filterDropdown('repo')" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl p-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-medium transition-colors" value="Kau51ubh/code-reviewer" placeholder="org/repo">
+                        <button onclick="toggleDropdownEvent(event, 'repo')" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                    </div>
+                    <ul id="dropdown-list-repo" style="display: none;" class="absolute left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg z-50 text-xs font-medium divide-y divide-slate-100 dark:divide-slate-700"></ul>
+                </div>
+
+                <div class="group relative" id="dropdown-container-branch">
+                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">Feature Branch</label>
+                    <div class="relative">
+                        <input type="text" id="branch" onfocus="showDropdown('branch')" oninput="filterDropdown('branch')" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-brand-600 dark:text-brand-400 rounded-xl p-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-mono font-semibold transition-colors" value="release-v1" placeholder="Search or select branch...">
+                        <button onclick="toggleDropdownEvent(event, 'branch')" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                    </div>
+                    <ul id="dropdown-list-branch" style="display: none;" class="absolute left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg z-50 text-xs font-medium divide-y divide-slate-100 dark:divide-slate-700"></ul>
+                </div>
+
+                <div class="group relative" id="dropdown-container-base_branch">
+                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">Base Branch</label>
+                    <div class="relative">
+                        <input type="text" id="base_branch" onfocus="showDropdown('base_branch')" oninput="filterDropdown('base_branch')" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-xl p-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-mono transition-colors" value="main" placeholder="Search or select base branch...">
+                        <button onclick="toggleDropdownEvent(event, 'base_branch')" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </button>
+                    </div>
+                    <ul id="dropdown-list-base_branch" style="display: none;" class="absolute left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg z-50 text-xs font-medium divide-y divide-slate-100 dark:divide-slate-700"></ul>
+                </div>
+            </div>
         </div>
 
-        <div id="loading" class="hidden bg-white dark:bg-slate-900 p-10 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 mb-8 relative overflow-hidden text-center">
+        <div id="loading" style="display: none;" class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-10 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 mb-8 relative overflow-hidden text-center">
             <div class="absolute top-0 left-0 w-full h-1 bg-slate-100 dark:bg-slate-800">
                 <div class="h-full bg-brand-500 animate-[pulse_2s_ease-in-out_infinite]" style="width: 100%;"></div>
             </div>
@@ -168,7 +233,7 @@
                 <h3 class="text-xl font-bold text-slate-800 dark:text-white mb-2">Analyzing Architecture</h3>
                 <p id="loadingText" class="text-sm font-medium text-brand-600 dark:text-brand-400 h-6">Fetching metadata...</p>
                 
-                <div id="scanDashboard" class="hidden mt-8 w-full max-w-4xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-6 mx-auto">
+                <div id="scanDashboard" style="display: none;" class="mt-8 w-full max-w-4xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-6 mx-auto">
                     <div class="grid grid-cols-2 md:grid-cols-4 gap-6 text-center divide-x divide-slate-200 dark:divide-slate-700">
                         <div>
                             <p class="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1">Processed</p>
@@ -193,60 +258,71 @@
             </div>
         </div>
 
-        <div id="metricsBar" class="hidden grid grid-cols-2 md:grid-cols-6 gap-4 mb-8">
-            <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-center flex-col text-center">
-                <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider">Execution Time</p>
-                <p id="timeTaken" class="text-lg font-bold text-slate-800 dark:text-white">0.00s</p>
-            </div>
-            <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-center flex-col text-center">
-                <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider">Tokens Used</p>
-                <p id="tokenCount" class="text-lg font-bold text-slate-800 dark:text-white">0</p>
-            </div>
-            <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-center flex-col text-center">
-                <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider">FinOps Cost</p>
-                <p id="finopsCost" class="text-lg font-bold text-emerald-600 dark:text-emerald-400">$0.00</p>
-            </div>
-            <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-center flex-col text-center relative group">
-                <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider">Data Scanned (BQ)</p>
-                <p id="dataScanned" class="text-lg font-bold text-blue-600 dark:text-blue-400">0.00 GB</p>
-                <!-- FinOps live Quota progress indicator -->
-                <div class="w-24 bg-slate-100 dark:bg-slate-800 h-1.5 rounded-full mt-1 overflow-hidden">
-                    <div id="finopsGauge" class="bg-blue-600 h-full transition-all duration-500" style="width: 0%"></div>
+        <div id="metricsBar" style="display: none;" class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-8 overflow-hidden">
+            <div class="grid grid-cols-2 md:grid-cols-5 divide-x divide-y md:divide-y-0 divide-slate-200 dark:divide-slate-800">
+                <div class="p-5 flex flex-col items-center justify-center text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                    <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> Execution Time</p>
+                    <p id="timeTaken" class="text-xl font-bold text-slate-800 dark:text-white">0.0s</p>
                 </div>
-            </div>
-            <div class="bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center justify-center flex-col text-center">
-                <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider">Files Scanned</p>
-                <p id="fileCount" class="text-lg font-bold text-slate-800 dark:text-white">0</p>
-            </div>
-            <div class="flex flex-col gap-2">
-                <button onclick="pushAllClean()" class="bg-brand-600 hover:bg-brand-700 text-white rounded-xl flex items-center justify-center py-2 cursor-pointer transition-colors flex-1 shadow-sm font-semibold text-xs uppercase tracking-widest text-center">Push All Clean</button>
-                <div class="bg-slate-900 dark:bg-slate-700 text-white rounded-xl flex items-center justify-center py-2 cursor-pointer transition-colors flex-1 shadow-sm font-semibold text-xs uppercase tracking-widest text-center" onclick="exportMarkdownReport()">Export Report</div>
+                <div class="p-5 flex flex-col items-center justify-center text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                    <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg> Tokens Used</p>
+                    <p id="tokenCount" class="text-xl font-bold text-slate-800 dark:text-white">0</p>
+                </div>
+                <div class="p-5 flex flex-col items-center justify-center text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                    <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> FinOps Cost</p>
+                    <p id="finopsCost" class="text-xl font-bold text-emerald-600 dark:text-emerald-400">$0.00</p>
+                </div>
+                <div class="p-5 flex flex-col items-center justify-center text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors relative group">
+                    <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg> Data Scanned</p>
+                    <p id="dataScanned" class="text-xl font-bold text-blue-600 dark:text-blue-400">0.00 GB</p>
+                    <div class="w-full max-w-[100px] bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full mt-1.5 overflow-hidden">
+                        <div id="finopsGauge" class="bg-blue-500 h-full transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="p-5 flex flex-col items-center justify-center text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                    <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg> Files Scanned</p>
+                    <p id="fileCount" class="text-xl font-bold text-slate-800 dark:text-white">0</p>
+                </div>
             </div>
         </div>
 
-        <div id="results-layout" class="hidden flex flex-col md:flex-row gap-6 items-start">
-            <div class="w-full md:w-1/3 lg:w-1/4 bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-4 sticky top-24">
-                <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 px-2">Files Analyzed</h3>
+        <div id="results-layout" style="display: none;" class="flex-col md:flex-row gap-6 items-start">
+            
+            <div class="w-full md:w-1/3 lg:w-1/4 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-4 sticky top-24 shrink-0">
+                <div class="flex items-center justify-between mb-4 px-2">
+                    <h3 class="text-xs font-bold text-slate-500 uppercase tracking-widest">Files Analyzed</h3>
+                    <button onclick="openBatchPushModal()" class="text-[0.6rem] font-bold bg-brand-50 text-brand-600 dark:bg-brand-900/30 dark:text-brand-400 px-2 py-1 rounded hover:bg-brand-100 dark:hover:bg-brand-900/50 transition-colors cursor-pointer">
+                        Batch Push
+                    </button>
+                </div>
                 
-                <!-- Sidebar Interactive Filters -->
-                <div class="flex gap-1 mb-4 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg overflow-x-auto text-[0.6rem] font-bold uppercase tracking-wider">
-                    <button onclick="filterSidebar('all')" id="filter-all" class="flex-1 py-1.5 px-1 rounded-md bg-white dark:bg-slate-700 shadow-sm transition-colors text-slate-800 dark:text-white">All</button>
-                    <button onclick="filterSidebar('issues')" id="filter-issues" class="flex-1 py-1.5 px-1 rounded-md text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors">Issues</button>
-                    <button onclick="filterSidebar('autofix')" id="filter-autofix" class="flex-1 py-1.5 px-1 rounded-md text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors">Fixed</button>
-                    <button onclick="filterSidebar('clean')" id="filter-clean" class="flex-1 py-1.5 px-1 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 transition-colors">Clean</button>
+                <div class="flex gap-1 mb-4 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg overflow-x-auto text-[0.6rem] font-bold uppercase tracking-wider shrink-0">
+                    <button onclick="filterSidebar('all')" id="filter-all" class="flex-1 py-1.5 px-1 rounded-md bg-white dark:bg-slate-700 shadow-sm ring-1 ring-slate-300 dark:ring-slate-600 transition-colors text-slate-800 dark:text-white cursor-pointer">All</button>
+                    <button onclick="filterSidebar('issues')" id="filter-issues" class="flex-1 py-1.5 px-1 rounded-md text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors cursor-pointer">Issues</button>
+                    <button onclick="filterSidebar('autofix')" id="filter-autofix" class="flex-1 py-1.5 px-1 rounded-md text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors cursor-pointer">Fixed</button>
+                    <button onclick="filterSidebar('clean')" id="filter-clean" class="flex-1 py-1.5 px-1 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 transition-colors cursor-pointer">Clean</button>
                 </div>
 
-                <ul id="sidebar-list" class="space-y-2"></ul>
+                <ul id="sidebar-list" class="space-y-2 max-h-[calc(100vh-280px)] overflow-y-auto pr-1 pb-4"></ul>
+                
+                <div class="pt-4 border-t border-slate-200 dark:border-slate-800 mt-2">
+                    <button onclick="exportMarkdownReport()" class="w-full py-2 text-xs font-bold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-2">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                        Export Report
+                    </button>
+                </div>
             </div>
-            <div class="w-full md:w-2/3 lg:w-3/4" id="main-canvas">
-                <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-10 text-center flex flex-col items-center justify-center text-slate-500 dark:text-slate-400">
+
+            <div class="w-full md:w-2/3 lg:w-3/4 min-w-0" id="main-canvas">
+                <div class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-10 text-center flex flex-col items-center justify-center text-slate-500 dark:text-slate-400 h-full min-h-[500px]">
                     <svg class="w-12 h-12 mb-4 text-slate-300 dark:text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                     <p>Select a file from the sidebar to view detailed analysis and refactored code.</p>
                 </div>
             </div>
+
         </div>
 
-        <div id="errorMessage" class="hidden bg-white dark:bg-slate-900 border border-red-200 dark:border-red-900/50 p-5 rounded-xl shadow-sm mb-8 flex items-start gap-4">
+        <div id="errorMessage" style="display: none;" class="bg-white dark:bg-slate-900 border border-red-200 dark:border-red-900/50 p-5 rounded-xl shadow-sm mb-8 items-start gap-4">
             <div class="bg-red-50 dark:bg-red-900/30 p-2 rounded-full text-red-500 dark:text-red-400 shrink-0">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
             </div>
@@ -265,13 +341,15 @@
         
         let renderedFilePayloads = {}; 
         let loadingInterval;
+        let githubBranchCache = {};
         
         window.fileDataStore = {};
 
-        // Utility to escape HTML specifically for the Original code view
         function escapeHtml(unsafe) {
             return (unsafe || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
         }
+
+        // --- Core Application Logic & Modals ---
 
         function toggleDarkMode() {
             document.documentElement.classList.toggle('dark');
@@ -281,18 +359,26 @@
                     monaco.editor.setTheme(isDark ? 'vs-dark' : 'vs-light');
                 });
             }
+            if(window.monacoDiffEditors) {
+                Object.values(window.monacoDiffEditors).forEach(editor => {
+                    monaco.editor.setTheme(isDark ? 'vs-dark' : 'vs-light');
+                });
+            }
         }
 
         async function toggleAuditDrawer(show) {
             const drawer = document.getElementById('auditDrawer');
             if (show) {
-                drawer.classList.remove('translate-x-full');
+                drawer.style.display = 'flex';
+                requestAnimationFrame(() => { drawer.classList.remove('translate-x-full'); });
+                const list = document.getElementById('auditTrailList');
+                list.innerHTML = '<div class="text-center py-10"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500 mx-auto mb-4"></div><p class="text-slate-500">Loading audit trail...</p></div>';
                 try {
                     const response = await fetch('/get_audit_history');
                     const logs = await response.json();
                     let html = '';
                     if (logs.length === 0) {
-                        html = `<div class="text-center text-slate-400 py-6 text-sm">No historic reviews tracked.</div>`;
+                        html = `<div class="text-center text-slate-500 py-6 text-sm">No historic reviews tracked.</div>`;
                     } else {
                         logs.forEach(log => {
                             const badgeColor = log.finops_status === 'PASSED' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800';
@@ -314,28 +400,130 @@
                     }
                     document.getElementById('auditTrailList').innerHTML = html;
                 } catch(e) {
-                    showToast("Failed to compile trail data.", "error");
+                    document.getElementById('auditTrailList').innerHTML = `<div class="text-red-500 text-center py-10">Failed to load logs.</div>`;
                 }
             } else {
                 drawer.classList.add('translate-x-full');
+                setTimeout(() => { drawer.style.display = 'none'; }, 500);
             }
         }
 
-        function showToast(message, type = 'success') {
+        window.showToast = function(message, type = 'success') {
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
-            const colors = type === 'success' ? 'bg-slate-900 dark:bg-slate-800 text-white' : 'bg-red-600 text-white';
-            toast.className = `flex items-center gap-3 ${colors} px-4 py-3 rounded-xl shadow-xl transition-all`;
+            // FIX: Ensure 'info' defaults to blue, not red.
+            let colors = '';
+            if(type === 'success') colors = 'bg-emerald-600 text-white';
+            else if(type === 'error') colors = 'bg-red-600 text-white';
+            else colors = 'bg-blue-500 text-white'; 
+            
+            toast.className = `flex items-center gap-3 ${colors} px-4 py-3 rounded-xl shadow-xl transition-all duration-300 pointer-events-auto opacity-0 translate-y-2`;
             toast.innerHTML = `<span class="text-sm font-medium tracking-wide">${message}</span>`;
             container.appendChild(toast);
-            setTimeout(() => toast.remove(), 3000);
+            
+            requestAnimationFrame(() => {
+                toast.classList.remove('opacity-0', 'translate-y-2');
+            });
+            setTimeout(() => {
+                toast.classList.add('opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
         }
+
+        // --- Fetching GitHub Branches Live ---
+        
+        const staticRepoOptions = ["Kau51ubh/code-reviewer", "Kau51ubh/bigquery-pipelines", "enterprise-data/edw-transforms"];
+
+        async function fetchGitHubBranches(repo) {
+            if(!repo || !repo.includes('/')) return ["main"];
+            if(githubBranchCache[repo]) return githubBranchCache[repo];
+            
+            try {
+                const res = await fetch(`https://api.github.com/repos/${repo}/branches`);
+                if(res.ok) {
+                    const data = await res.json();
+                    const branches = data.map(b => b.name);
+                    githubBranchCache[repo] = branches;
+                    return branches;
+                }
+            } catch(e) {}
+            return ["main", "master"]; // Fallback if API rate limited
+        }
+
+        window.showDropdown = async function(id) {
+            const list = document.getElementById(`dropdown-list-${id}`);
+            if (list) {
+                list.style.display = 'block';
+                await filterDropdown(id, true); // True forces it to show all options instead of filtering
+            }
+        }
+
+        window.filterDropdown = async function(id, showAll = false) {
+            const input = document.getElementById(id);
+            const list = document.getElementById(`dropdown-list-${id}`);
+            if(!list || !input) return;
+            
+            let filter = showAll ? '' : input.value.toLowerCase();
+            let options = [];
+
+            if (id === 'repo') {
+                options = staticRepoOptions;
+            } else if (id === 'branch' || id === 'base_branch') {
+                const repoVal = document.getElementById('repo').value;
+                list.innerHTML = `<li class="p-2.5 text-slate-400 italic text-xs">Fetching branches...</li>`;
+                options = await fetchGitHubBranches(repoVal);
+            }
+            
+            const filtered = options.filter(opt => opt.toLowerCase().includes(filter));
+            let html = '';
+            if (filtered.length === 0) {
+                html = `<li class="p-2.5 text-slate-400 italic text-xs">Custom input tracked</li>`;
+            } else {
+                filtered.forEach(opt => {
+                    html += `<li onclick="selectDropdownOption('${id}', '${opt}')" class="p-2.5 hover:bg-slate-100 dark:hover:bg-slate-700 cursor-pointer text-slate-800 dark:text-slate-200 transition-colors">${opt}</li>`;
+                });
+            }
+            list.innerHTML = html;
+        }
+
+        window.selectDropdownOption = function(id, value) {
+            const input = document.getElementById(id);
+            if (input) input.value = value;
+            const list = document.getElementById(`dropdown-list-${id}`);
+            if (list) list.style.display = 'none';
+        }
+
+        window.toggleDropdownEvent = function(e, id) {
+            e.stopPropagation();
+            const list = document.getElementById(`dropdown-list-${id}`);
+            if (list) {
+                if (list.style.display === 'none' || list.style.display === '') {
+                    showDropdown(id);
+                } else {
+                    list.style.display = 'none';
+                }
+            }
+        }
+
+        document.addEventListener('click', function(e) {
+            try {
+                ['repo', 'branch', 'base_branch'].forEach(id => {
+                    const container = document.getElementById(`dropdown-container-${id}`);
+                    const list = document.getElementById(`dropdown-list-${id}`);
+                    if (container && !container.contains(e.target)) {
+                        if (list) list.style.display = 'none';
+                    }
+                });
+            } catch (err) {}
+        });
+
+        // --- Layout Switching & Sidebars ---
 
         window.filterSidebar = function(status) {
             ['all', 'issues', 'autofix', 'clean'].forEach(id => {
                 const btn = document.getElementById('filter-' + id);
-                if(id === status) btn.classList.add('bg-white', 'dark:bg-slate-700', 'shadow-sm');
-                else btn.classList.remove('bg-white', 'dark:bg-slate-700', 'shadow-sm');
+                if(id === status) btn.classList.add('bg-white', 'dark:bg-slate-700', 'shadow-sm', 'ring-1', 'ring-slate-300', 'dark:ring-slate-600');
+                else btn.classList.remove('bg-white', 'dark:bg-slate-700', 'shadow-sm', 'ring-1', 'ring-slate-300', 'dark:ring-slate-600');
             });
             document.querySelectorAll('.sidebar-item').forEach(li => {
                 li.style.display = (status === 'all' || li.dataset.status === status) ? 'flex' : 'none';
@@ -343,24 +531,54 @@
         }
 
         window.switchCodeView = function(fileId, viewType) {
-            ['refactored', 'original', 'diff'].forEach(type => {
+            ['refactored', 'original', 'splitdiff'].forEach(type => {
                 const btn = document.getElementById(`btn-${fileId}-${type}`);
                 const view = document.getElementById(`view-${fileId}-${type}`);
                 if (btn && view) {
                     if (type === viewType) {
                         btn.classList.add('bg-white', 'dark:bg-slate-700', 'text-slate-800', 'dark:text-white', 'shadow-sm');
                         btn.classList.remove('text-slate-500', 'dark:text-slate-400', 'hover:text-slate-800', 'dark:hover:text-white', 'bg-transparent');
-                        view.classList.remove('hidden');
-                        view.classList.add('block');
+                        view.style.display = 'block';
                     } else {
                         btn.classList.remove('bg-white', 'dark:bg-slate-700', 'text-slate-800', 'dark:text-white', 'shadow-sm');
                         btn.classList.add('text-slate-500', 'dark:text-slate-400', 'hover:text-slate-800', 'dark:hover:text-white', 'bg-transparent');
-                        view.classList.remove('block');
-                        view.classList.add('hidden');
+                        view.style.display = 'none';
                     }
                 }
             });
-        }
+
+            if (viewType === 'splitdiff') {
+                if (!window.monacoDiffEditors) window.monacoDiffEditors = {};
+                
+                setTimeout(() => {
+                    if (!window.monacoDiffEditors[fileId]) {
+                        const data = window.fileDataStore[fileId];
+                        const langMap = { 'py': 'python', 'sql': 'sql', 'ksh': 'shell' };
+                        const isDark = document.documentElement.classList.contains('dark');
+                        
+                        const container = document.getElementById(`monaco-diff-container-${fileId}`);
+                        if (!container) return;
+                        
+                        const diffEditor = monaco.editor.createDiffEditor(container, {
+                            theme: isDark ? 'vs-dark' : 'vs-light',
+                            automaticLayout: true,
+                            readOnly: true,
+                            fontSize: 13,
+                            minimap: { enabled: false },
+                            renderSideBySide: true
+                        });
+                        
+                        diffEditor.setModel({
+                            original: monaco.editor.createModel(data.originalCode || '', langMap[data.ext] || 'plaintext'),
+                            modified: monaco.editor.createModel(data.pureRefactoredCode || '', langMap[data.ext] || 'plaintext')
+                        });
+                        window.monacoDiffEditors[fileId] = diffEditor;
+                    } else {
+                        window.monacoDiffEditors[fileId].layout();
+                    }
+                }, 50);
+            }
+        };
 
         window.switchLeftTab = function(fileId, tabName) {
             ['linter', 'schema', 'preview'].forEach(tab => {
@@ -370,11 +588,11 @@
                     if (tab === tabName) {
                         btn.classList.add('border-b-2', 'border-blue-500', 'text-blue-600', 'dark:text-blue-400');
                         btn.classList.remove('text-slate-500', 'dark:text-slate-400');
-                        view.classList.remove('hidden');
+                        view.style.display = 'block';
                     } else {
                         btn.classList.remove('border-b-2', 'border-blue-500', 'text-blue-600', 'dark:text-blue-400');
                         btn.classList.add('text-slate-500', 'dark:text-slate-400');
-                        view.classList.add('hidden');
+                        view.style.display = 'none';
                     }
                 }
             });
@@ -407,25 +625,99 @@
                     <div class="overflow-x-auto border border-slate-100 dark:border-slate-800 rounded-xl">
                         <table class="min-w-full divide-y divide-slate-100 dark:divide-slate-800 text-left text-[11px] font-mono">
                             <thead class="bg-slate-50 dark:bg-slate-800 text-slate-500">
-                                <tr>
-                                    ${headers.map(h => `<th class="px-3 py-2 font-bold">${h}</th>`).join('')}
-                                </tr>
+                                <tr>${headers.map(h => `<th class="px-3 py-2 font-bold">${h}</th>`).join('')}</tr>
                             </thead>
                             <tbody class="divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300">
-                                ${rows.map(row => `
-                                    <tr>
-                                        ${headers.map(h => `<td class="px-3 py-2 font-normal truncate max-w-[120px]" title="${row[h]}">${row[h]}</td>`).join('')}
-                                    </tr>
-                                `).join('')}
+                                ${rows.map(row => `<tr>${headers.map(h => `<td class="px-3 py-2 font-normal truncate max-w-[120px]" title="${row[h]}">${row[h]}</td>`).join('')}</tr>`).join('')}
                             </tbody>
                         </table>
-                    </div>
-                `;
+                    </div>`;
                 container.innerHTML = tableHtml;
             } catch(e) {
                 container.innerHTML = `<p class="text-xs text-red-500">Failed to render mock preview.</p>`;
             }
         }
+
+        // --- Modals & Batch Processing ---
+
+        window.openScorecardModal = function(safeId) {
+            const fileData = window.fileDataStore[safeId];
+            if (!fileData) return;
+            const scores = fileData.scorecard;
+            const scoreColor = (val) => val > 80 ? 'text-emerald-500 border-emerald-500' : val > 50 ? 'text-amber-500 border-amber-500' : 'text-red-500 border-red-500';
+            const container = document.getElementById('scorecardGridContainer');
+            
+            container.innerHTML = `
+                <div class="bg-slate-50 dark:bg-slate-800/40 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 text-center flex flex-col items-center">
+                    <p class="text-xs text-slate-400 font-bold uppercase tracking-wider mb-3">Performance</p>
+                    <div class="w-12 h-12 rounded-full border-2 ${scoreColor(scores.performance)} flex items-center justify-center font-black text-sm mb-3">🚀</div>
+                    <p class="text-xl font-black ${scoreColor(scores.performance)} mb-1">${scores.performance}/100</p>
+                    <p class="text-[10px] text-slate-500 leading-normal">Slot efficiency, Cartesian product protection & syntax limits.</p>
+                </div>
+                <div class="bg-slate-50 dark:bg-slate-800/40 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 text-center flex flex-col items-center">
+                    <p class="text-xs text-slate-400 font-bold uppercase tracking-wider mb-3">FinOps Safety</p>
+                    <div class="w-12 h-12 rounded-full border-2 ${scoreColor(scores.cost_efficiency)} flex items-center justify-center font-black text-sm mb-3">💰</div>
+                    <p class="text-xl font-black ${scoreColor(scores.cost_efficiency)} mb-1">${scores.cost_efficiency}/100</p>
+                    <p class="text-[10px] text-slate-500 leading-normal">Scan bytes management, dynamic cost estimators & partition thresholds.</p>
+                </div>
+                <div class="bg-slate-50 dark:bg-slate-800/40 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 text-center flex flex-col items-center">
+                    <p class="text-xs text-slate-400 font-bold uppercase tracking-wider mb-3">Security Guard</p>
+                    <div class="w-12 h-12 rounded-full border-2 ${scoreColor(scores.security)} flex items-center justify-center font-black text-sm mb-3">🔒</div>
+                    <p class="text-xl font-black ${scoreColor(scores.security)} mb-1">${scores.security}/100</p>
+                    <p class="text-[10px] text-slate-500 leading-normal">Credential leak prevention & API keys detection.</p>
+                </div>
+                <div class="bg-slate-50 dark:bg-slate-800/40 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 text-center flex flex-col items-center">
+                    <p class="text-xs text-slate-400 font-bold uppercase tracking-wider mb-3">Compliance</p>
+                    <div class="w-12 h-12 rounded-full border-2 ${scoreColor(scores.compliance)} flex items-center justify-center font-black text-sm mb-3">📜</div>
+                    <p class="text-xl font-black ${scoreColor(scores.compliance)} mb-1">${scores.compliance}/100</p>
+                    <p class="text-[10px] text-slate-500 leading-normal">Standardized workspace naming, shells & parameterization rules.</p>
+                </div>
+            `;
+            document.getElementById('scorecardModal').style.display = 'flex';
+        }
+
+        window.closeScorecardModal = function() {
+            document.getElementById('scorecardModal').style.display = 'none';
+        }
+
+        window.openBatchPushModal = function() {
+            const keys = Object.keys(window.fileDataStore);
+            if(keys.length === 0) return showToast("No files analyzed yet.", "error");
+
+            let html = keys.map(key => {
+                const f = window.fileDataStore[key];
+                return `
+                <label class="flex items-center gap-3 p-3 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700">
+                    <input type="checkbox" class="batch-push-cb w-4 h-4 text-brand-600 bg-slate-100 border-slate-300 rounded focus:ring-brand-500" value="${key}" checked>
+                    <span class="font-mono text-sm text-slate-700 dark:text-slate-200">${f.filename}</span>
+                </label>`;
+            }).join('');
+            
+            document.getElementById('batchPushList').innerHTML = html;
+            document.getElementById('batchPushModal').style.display = 'flex';
+        };
+
+        window.closeBatchPushModal = function() { document.getElementById('batchPushModal').style.display = 'none'; };
+
+        window.executeBatchPush = async function() {
+            const checkboxes = document.querySelectorAll('.batch-push-cb:checked');
+            if (checkboxes.length === 0) return showToast("No scripts selected.", "error");
+            
+            const btn = document.getElementById('batchPushConfirmBtn');
+            btn.disabled = true;
+            btn.innerText = "Pushing...";
+            
+            for(let cb of checkboxes) {
+                await window.pushToGitHub(cb.value);
+            }
+            
+            showToast("Batch push completed successfully!", "success");
+            btn.disabled = false;
+            btn.innerText = "Commit Selected Files";
+            window.closeBatchPushModal();
+        };
+
+        // --- Core Execution Logic ---
 
         function startLoadingText(overrideText = null) {
             clearInterval(loadingInterval);
@@ -443,8 +735,8 @@
             const reviewBtn = document.getElementById('reviewBtn');
             const payload = { repo: repoInput.value, branch: branchInput.value, base_branch: baseBranchInput.value };
             
-            document.getElementById('errorMessage').classList.add('hidden');
-            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('errorMessage').style.display = 'none';
+            document.getElementById('loading').style.display = 'block';
             
             reviewBtn.disabled = true;
             reviewBtn.innerHTML = `Processing...`;
@@ -471,10 +763,9 @@
                 renderedFilePayloads = {};
                 window.fileDataStore = {};
 
-                // Progressive Reveal: Unhide UI before starting loop
-                document.getElementById('results-layout').classList.remove('hidden');
-                document.getElementById('metricsBar').classList.remove('hidden');
-                document.getElementById('scanDashboard').classList.remove('hidden');
+                document.getElementById('results-layout').style.display = 'flex';
+                document.getElementById('metricsBar').style.display = 'block'; 
+                document.getElementById('scanDashboard').style.display = 'block';
 
                 const repoContextStr = files.map(f => f.filename).join(", ");
 
@@ -502,7 +793,6 @@
                     totalBytes += fileResult.bq_bytes || 0;
                     totalCost += fileResult.cost || 0;
                     
-                    // Progressive metric update
                     document.getElementById('actualTokens').textContent = actualTokens.toLocaleString();
                     document.getElementById('actualTime').textContent = actualTime.toFixed(1) + 's';
                     document.getElementById('actualFiles').textContent = `${i+1} / ${files.length}`;
@@ -513,24 +803,22 @@
                     const scannedGB = totalBytes / 1073741824;
                     document.getElementById('dataScanned').textContent = scannedGB.toFixed(2) + " GB";
                     
-                    // Quota gauge calculates percentage of the 10GB limit 
                     const quotaPercent = Math.min((scannedGB / 10) * 100, 100);
                     const gauge = document.getElementById('finopsGauge');
                     gauge.style.width = `${quotaPercent}%`;
                     if(quotaPercent > 80) gauge.className = 'bg-red-500 h-full transition-all duration-500';
                     else if(quotaPercent > 40) gauge.className = 'bg-amber-500 h-full transition-all duration-500';
-                    else gauge.className = 'bg-blue-600 h-full transition-all duration-500';
+                    else gauge.className = 'bg-blue-500 h-full transition-all duration-500';
 
                     document.getElementById('fileCount').textContent = `${i+1}`;
 
                     renderSingleFile(fileResult, i === 0);
                 }
-
-                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('loading').style.display = 'none';
 
             } catch (error) {
-                document.getElementById('loading').classList.add('hidden');
-                document.getElementById('errorMessage').classList.remove('hidden');
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('errorMessage').style.display = 'flex';
                 document.getElementById('errorDetails').textContent = error.message;
             } finally {
                 clearInterval(loadingInterval);
@@ -540,7 +828,7 @@
             }
         }
 
-        window.sendChatMessage = async function(safeId, filename) {
+        window.sendChatMessage = async function(safeId) {
             const inputEl = document.getElementById(`chat-input-${safeId}`);
             const message = inputEl.value.trim();
             if (!message) return;
@@ -550,7 +838,6 @@
             
             fileData.chatHistory.push({ role: 'user', text: message });
             fileData.pureRefactoredCode = currentCode;
-            
             inputEl.value = '';
             renderMainCanvasHTML(safeId); 
 
@@ -558,7 +845,7 @@
                 const response = await fetch(CHAT_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filename: filename, code: currentCode, message: message })
+                    body: JSON.stringify({ filename: fileData.filename, code: currentCode, message: message })
                 });
                 
                 const data = await response.json();
@@ -571,30 +858,24 @@
                     const parts = aiReplyText.split(codeHeaderRegex);
                     const explanation = parts[0].replace(/### 💡 AI Reply/i, '').trim();
                     const newCodeRaw = parts[1] ? parts[1].trim() : '';
-                    
                     fileData.chatHistory.push({ role: 'ai', text: explanation, tokens: data.tokens });
                     
                     const codeMatch = newCodeRaw.match(/^```[a-z]*\n([\s\S]*)\n```$/i);
                     if (codeMatch) { fileData.pureRefactoredCode = codeMatch[1]; }
                     else { fileData.pureRefactoredCode = newCodeRaw; }
-
                 } else {
                     fileData.chatHistory.push({ role: 'ai', text: aiReplyText, tokens: data.tokens });
                 }
 
                 renderMainCanvasHTML(safeId);
-                showToast("Code updated from chat!");
-
-            } catch (error) {
-                showToast("Error communicating with Architect.", "error");
-            }
+                showToast("Code updated from chat!", "success");
+            } catch (error) { showToast("Error communicating with Architect.", "error"); }
         }
 
         window.pushToGitHub = async function(safeId) {
             const fileData = window.fileDataStore[safeId];
             const currentCode = window.monacoEditors && window.monacoEditors[safeId] ? window.monacoEditors[safeId].getValue() : fileData.pureRefactoredCode;
-            
-            showToast("Pushing to GitHub...", "success");
+            showToast("Pushing to GitHub...", "info");
             
             try {
                 const response = await fetch('/commit', {
@@ -611,27 +892,7 @@
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.error);
                 showToast(data.message, "success");
-            } catch (error) {
-                showToast("Commit Failed: " + error.message, "error");
-            }
-        }
-
-        window.pushAllClean = async function() {
-            const cleanFiles = Object.keys(window.fileDataStore).filter(key => {
-                const data = window.fileDataStore[key];
-                const hasErrs = data.localFixesArray.some(i => i.toLowerCase().includes('error') || i.toLowerCase().includes('critical') || i.toLowerCase().includes('security'));
-                const isFinOpsBlocked = data.bq_metrics && data.bq_metrics.message && data.bq_metrics.message.includes("FINOPS BLOCKED");
-                const hasPlaceholders = data.pureRefactoredCode && (data.pureRefactoredCode.includes("<MISSING_FILTER_REQUIRED>") || data.pureRefactoredCode.includes("TODO"));
-                return !hasErrs && !isFinOpsBlocked && !hasPlaceholders && data.pureRefactoredCode;
-            });
-
-            if(cleanFiles.length === 0) return showToast("No clean files available to push.", "error");
-
-            showToast(`Pushing ${cleanFiles.length} clean files to GitHub...`);
-            for(let key of cleanFiles) {
-                await window.pushToGitHub(key);
-            }
-            showToast("Bulk Push Complete!", "success");
+            } catch (error) { showToast("Commit Failed: " + error.message, "error"); }
         }
 
         window.validateWithBQ = async function(safeId) {
@@ -641,7 +902,7 @@
             
             btnEl.disabled = true;
             btnEl.innerText = 'Validating...';
-            showToast("Running BigQuery Engine...", "success");
+            showToast("Running BigQuery Engine...", "info");
 
             try {
                 const response = await fetch('/validate_bq', {
@@ -655,14 +916,10 @@
 
                 fileData.bq_metrics = bq_metrics;
                 fileData.pureRefactoredCode = currentCode; 
-                
                 renderMainCanvasHTML(safeId);
                 
-                if(bq_metrics.valid) {
-                    showToast("BigQuery Validation Passed!", "success");
-                } else {
-                    showToast("BigQuery Error Detected.", "error");
-                }
+                if(bq_metrics.valid) showToast("BigQuery Validation Passed!", "success");
+                else showToast("BigQuery Error Detected.", "error");
 
             } catch (error) {
                 showToast("Validation Error: " + error.message, "error");
@@ -690,9 +947,7 @@
                 if (codeBlockStart > 0) {
                     reviewPart += '\n\n**Additional Notes:**\n' + rawCodePart.substring(0, codeBlockStart).trim();
                     codePart = rawCodePart.substring(codeBlockStart).trim();
-                } else {
-                    codePart = rawCodePart;
-                }
+                } else { codePart = rawCodePart; }
             }
 
             let pureRefactoredCode = codePart;
@@ -700,8 +955,7 @@
             if (codeMatch) { pureRefactoredCode = codeMatch[1]; }
 
             window.fileDataStore[safeId] = {
-                filename: filename,
-                ext: ext,
+                filename: filename, ext: ext,
                 localFixesArray: fileResult.unit_test_fixes || [],
                 reviewPart: reviewPart,
                 originalCode: fileResult.original_code || '',
@@ -716,22 +970,24 @@
             const contentLower = reviewPart.toLowerCase();
             let hasLocalErrors = window.fileDataStore[safeId].localFixesArray.some(issue => issue.toLowerCase().includes('error') || issue.toLowerCase().includes('critical') || issue.toLowerCase().includes('security'));
             
-            let dotColor = 'bg-emerald-500'; 
             let statusId = 'clean';
+            let dotColor = 'text-emerald-500'; 
+            let iconHtml = `<svg class="w-4 h-4 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>`;
             let badgeHtml = `<span class="bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Clean</span>`;
             
             if (hasLocalErrors || contentLower.includes('syntax error') || contentLower.includes('rule violation') || contentLower.includes('security breach')) {
-                dotColor = 'bg-red-500';
                 statusId = 'issues';
+                iconHtml = `<svg class="w-4 h-4 text-red-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>`;
                 badgeHtml = `<span class="bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Issues</span>`;
             } else if (contentLower.includes('no advanced architectural') || contentLower.includes('bypassed')) {
                 if (window.fileDataStore[safeId].localFixesArray.length > 0) {
-                    dotColor = 'bg-blue-500';
                     statusId = 'autofix';
-                    badgeHtml = `<span class="bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Auto-Fix</span>`;
+                    iconHtml = `<svg class="w-4 h-4 text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>`;
+                    badgeHtml = `<span class="bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-emerald-800 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Auto-Fix</span>`;
                 }
             } else {
-                dotColor = 'bg-amber-500';
+                statusId = 'optimize';
+                iconHtml = `<svg class="w-4 h-4 text-amber-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>`;
                 badgeHtml = `<span class="bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Optimize</span>`;
             }
 
@@ -746,11 +1002,11 @@
             sidebarItem.innerHTML = `
                 <div class="flex items-center justify-between w-full">
                     <div class="flex items-center gap-2 overflow-hidden">
-                        <div class="w-2 h-2 rounded-full ${dotColor} shrink-0"></div>
+                        ${iconHtml}
                         <span class="text-sm font-semibold text-slate-700 dark:text-slate-300 truncate">${filename}</span>
                     </div>
                 </div>
-                <div class="flex items-center justify-between pl-4">
+                <div class="flex items-center justify-between pl-6">
                     <span class="text-xs text-slate-400 font-mono">${ext.toUpperCase()}</span>
                     ${badgeHtml}
                 </div>
@@ -766,19 +1022,13 @@
             let isFinOpsBlocked = data.bq_metrics && data.bq_metrics.message && data.bq_metrics.message.includes("FINOPS BLOCKED");
             
             let fixesHtml = data.localFixesArray.map(f => `<li class="text-sm font-medium text-red-600 dark:text-red-400 break-words border-b border-slate-200 dark:border-slate-700 pb-2">${f}</li>`).join('');
-            // Fix: Add a user friendly placeholder when fixesHtml is blank to avoid rendering a completely empty panel
-            if (!fixesHtml) {
-                fixesHtml = `<li class="text-sm font-medium text-emerald-600 dark:text-emerald-400">All deterministic checks passed.</li>`;
-            }
+            if (!fixesHtml) fixesHtml = `<li class="text-sm font-medium text-emerald-600 dark:text-emerald-400">All deterministic checks passed.</li>`;
             
-            // Build interactive side-by-side BigQuery Metadata Schema Tree view OR Airflow task list
             let schemaHtml = '';
             if (data.ext === 'py') {
                 schemaHtml = `<div class="text-xs space-y-4">
                     <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-3 shadow-sm">
-                        <p class="font-bold text-slate-800 dark:text-slate-200 border-b border-slate-100 dark:border-slate-800 pb-1.5 mb-2 flex items-center gap-1.5 font-mono">
-                            Airflow Task Pipeline
-                        </p>
+                        <p class="font-bold text-slate-800 dark:text-slate-200 border-b border-slate-100 dark:border-slate-800 pb-1.5 mb-2 flex items-center gap-1.5 font-mono">Airflow Task Pipeline</p>
                         <div class="space-y-1">
                             ${data.airflow_tasks.tasks && data.airflow_tasks.tasks.length > 0 
                                 ? data.airflow_tasks.tasks.map(t => `<div class="px-2 py-1 bg-slate-50 dark:bg-slate-800 rounded font-mono text-[10px] text-slate-700 dark:text-slate-300">${t.name} (${t.type})</div>`).join('') 
@@ -786,9 +1036,7 @@
                         </div>
                     </div>
                     <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-3 shadow-sm">
-                        <p class="font-bold text-slate-800 dark:text-slate-200 border-b border-slate-100 dark:border-slate-800 pb-1.5 mb-2 flex items-center gap-1.5 font-mono">
-                            Task Lineage Flow
-                        </p>
+                        <p class="font-bold text-slate-800 dark:text-slate-200 border-b border-slate-100 dark:border-slate-800 pb-1.5 mb-2 flex items-center gap-1.5 font-mono">Task Lineage Flow</p>
                         <div class="space-y-1 font-mono text-[10px] text-slate-600 dark:text-slate-400">
                             ${data.airflow_tasks.lineage && data.airflow_tasks.lineage.length > 0 
                                 ? data.airflow_tasks.lineage.map(l => `<div class="px-2 py-1 bg-slate-50 dark:bg-slate-800 rounded">${l}</div>`).join('') 
@@ -829,10 +1077,17 @@
                 const bqColor = data.bq_metrics.valid 
                     ? 'bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800' 
                     : 'bg-red-50 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800';
-                bqHtml = `<div class="mt-4 p-3.5 rounded-xl border ${bqColor} flex flex-col gap-2 text-sm font-medium overflow-hidden">
+                
+                bqHtml = `<div class="mt-4 p-3.5 rounded-xl border ${bqColor} flex flex-col gap-2 text-sm font-medium overflow-visible">
                             <span class="flex items-center gap-2 font-bold shrink-0">
                                 <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg> 
                                 BigQuery Engine Dry Run
+                                <div class="group relative inline-block cursor-help ml-1">
+                                    <svg class="w-4 h-4 text-slate-400 hover:text-slate-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                    <div class="hidden group-hover:block absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-slate-800 text-white text-xs font-normal p-2.5 rounded-lg shadow-xl w-48 z-50 transition-opacity">
+                                        Validates exact structural payload cost limits and strict SQL parsing.
+                                    </div>
+                                </div>
                             </span>
                             <span class="break-words whitespace-pre-wrap w-full">${data.bq_metrics.message}</span>
                           </div>`;
@@ -856,107 +1111,68 @@
                 chatHtml += `</div>`;
             }
 
-            let validateBtn = data.ext === 'sql' ? `<button onclick="validateWithBQ('${safeId}')" id="val-btn-${safeId}" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors border border-blue-700 whitespace-nowrap">Validate BQ</button>` : '';
-            let commitBtn = `<button onclick="pushToGitHub('${safeId}')" ${isFinOpsBlocked ? 'disabled title="Blocked by FinOps Threshold"' : ''} class="px-5 py-2.5 rounded-lg text-sm font-medium text-white transition-colors shadow-sm ${isFinOpsBlocked ? 'bg-slate-400 cursor-not-allowed opacity-50' : 'bg-slate-900 hover:bg-slate-800 dark:bg-slate-700 dark:hover:bg-slate-600'} whitespace-nowrap">Push to Branch</button>`;
+            let validateBtn = data.ext === 'sql' ? `<button onclick="validateWithBQ('${safeId}')" id="val-btn-${safeId}" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer whitespace-nowrap shadow-sm hover:-translate-y-0.5 transform">Validate BQ</button>` : '';
+            let commitBtn = `<button onclick="pushToGitHub('${safeId}')" ${isFinOpsBlocked ? 'disabled title="Blocked by FinOps Threshold"' : ''} class="px-5 py-2.5 rounded-lg text-sm font-medium text-white transition-colors cursor-pointer whitespace-nowrap shadow-sm hover:-translate-y-0.5 transform ${isFinOpsBlocked ? 'bg-slate-400 cursor-not-allowed opacity-50' : 'bg-slate-900 hover:bg-slate-800 dark:bg-slate-700 dark:hover:bg-slate-600'}">Push to Branch</button>`;
 
-            let diffHtml = '';
-            if (data.pureRefactoredCode && data.originalCode) {
-                const diff = Diff.diffLines(data.originalCode, data.pureRefactoredCode);
-                diff.forEach((part) => {
-                    const bgClass = part.added ? 'bg-green-100 dark:bg-green-900/30' : part.removed ? 'bg-red-100 dark:bg-red-900/30' : 'bg-transparent';
-                    const textClass = part.added ? 'text-green-800 dark:text-green-300' : part.removed ? 'text-red-800 dark:text-red-300' : 'text-slate-800 dark:text-slate-300';
-                    const borderClass = part.added ? 'border-l-2 border-green-500' : part.removed ? 'border-l-2 border-red-500' : 'border-l-2 border-transparent';
-                    const prefix = part.added ? '+ ' : part.removed ? '- ' : '  ';
-                    
-                    let escaped = escapeHtml(part.value);
-                    const lines = escaped.split('\n');
-                    lines.forEach((line, idx) => {
-                        if (idx === lines.length - 1 && line === '') return;
-                        diffHtml += `<div class="${bgClass} ${textClass} ${borderClass} px-4 whitespace-pre select-text">${prefix}${line}</div>`;
-                    });
-                });
-            }
-
-            // Define scorecard colors helper inside renderMainCanvasHTML to fix Javascript ReferenceError crash
-            const scoreColor = (val) => val > 80 ? 'text-emerald-500 border-emerald-500' : val > 50 ? 'text-amber-500 border-amber-500' : 'text-red-500 border-red-500';
+            const isComplexOptimization = data.reviewPart && data.reviewPart.length > 300;
+            const glowClass = isComplexOptimization ? "ring-2 ring-brand-500/50 shadow-lg shadow-brand-500/20 border-transparent" : "border-slate-100 dark:border-slate-700";
 
             renderedFilePayloads[safeId] = `
-                <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-6 md:p-8 animate-[fadeIn_0.3s_ease-out]">
+                <div class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-6 md:p-8 animate-[fadeIn_0.3s_ease-out] w-full min-w-0">
                     <div class="flex items-center justify-between mb-8 border-b border-slate-100 dark:border-slate-800 pb-4">
-                        <h2 class="text-xl font-mono font-bold text-slate-800 dark:text-white">${data.filename}</h2>
-                        ${data.badgeHtml.replace('text-[0.65rem]', 'text-xs px-3 py-1')}
-                    </div>
-
-                    <!-- AI Optimization Scorecard Section - Refined, Sleeker Indicator Circles -->
-                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                        <div class="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 p-4 rounded-xl flex items-center justify-between">
-                            <div><p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Performance</p><p class="text-xl font-black mt-1 ${scoreColor(data.scorecard.performance)}">${data.scorecard.performance}/100</p></div>
-                            <div class="w-7 h-7 rounded-full border-2 ${scoreColor(data.scorecard.performance)} flex items-center justify-center font-bold text-[10px] shrink-0">🚀</div>
-                        </div>
-                        <div class="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 p-4 rounded-xl flex items-center justify-between">
-                            <div><p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">FinOps Safety</p><p class="text-xl font-black mt-1 ${scoreColor(data.scorecard.cost_efficiency)}">${data.scorecard.cost_efficiency}/100</p></div>
-                            <div class="w-7 h-7 rounded-full border-2 ${scoreColor(data.scorecard.cost_efficiency)} flex items-center justify-center font-bold text-[10px] shrink-0">💎</div>
-                        </div>
-                        <div class="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 p-4 rounded-xl flex items-center justify-between">
-                            <div><p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Security Guard</p><p class="text-xl font-black mt-1 ${scoreColor(data.scorecard.security)}">${data.scorecard.security}/100</p></div>
-                            <div class="w-7 h-7 rounded-full border-2 ${scoreColor(data.scorecard.security)} flex items-center justify-center font-bold text-[10px] shrink-0">🔒</div>
-                        </div>
-                        <div class="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 p-4 rounded-xl flex items-center justify-between">
-                            <div><p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Compliance</p><p class="text-xl font-black mt-1 ${scoreColor(data.scorecard.compliance)}">${data.scorecard.compliance}/100</p></div>
-                            <div class="w-7 h-7 rounded-full border-2 ${scoreColor(data.scorecard.compliance)} flex items-center justify-center font-bold text-[10px] shrink-0">📋</div>
+                        <h2 class="text-xl font-mono font-bold text-slate-800 dark:text-white truncate">${data.filename}</h2>
+                        <div class="flex items-center gap-3 shrink-0 pl-2">
+                            <button onclick="openScorecardModal('${safeId}')" class="px-3.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-800/50 text-xs font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex items-center gap-1.5 text-slate-700 dark:text-slate-300 shadow-sm uppercase tracking-wider backdrop-blur-sm cursor-pointer">
+                                📊 View Quality Scorecard
+                            </button>
+                            ${data.badgeHtml.replace('text-[0.65rem]', 'text-xs px-3 py-1')}
                         </div>
                     </div>
                     
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-6">
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-8 mb-6">
                         <div class="bg-slate-50/50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-700 h-fit overflow-hidden">
-                            <!-- Toggle Header Tabs between Linter Report, Table Schema, & AI Preview -->
                             <div class="flex border-b border-slate-200 dark:border-slate-700 text-xs font-bold uppercase tracking-wider bg-slate-100 dark:bg-slate-800/40">
-                                <button onclick="switchLeftTab('${safeId}', 'linter')" id="tab-btn-${safeId}-linter" class="flex-1 py-3 text-center border-b-2 border-blue-500 text-blue-600 dark:text-blue-400">Deterministic Linter</button>
-                                <button onclick="switchLeftTab('${safeId}', 'schema')" id="tab-btn-${safeId}-schema" class="flex-1 py-3 text-center text-slate-500 dark:text-slate-400">${data.ext === 'py' ? 'Airflow Task Graph' : 'Schema Explorer'}</button>
-                                ${data.ext === 'sql' ? `<button onclick="switchLeftTab('${safeId}', 'preview')" id="tab-btn-${safeId}-preview" class="flex-1 py-3 text-center text-slate-500 dark:text-slate-400">AI Data Preview</button>` : ''}
+                                <button onclick="switchLeftTab('${safeId}', 'linter')" id="tab-btn-${safeId}-linter" class="flex-1 py-3 text-center border-b-2 border-blue-500 text-blue-600 dark:text-blue-400 cursor-pointer">Deterministic Linter</button>
+                                <button onclick="switchLeftTab('${safeId}', 'schema')" id="tab-btn-${safeId}-schema" class="flex-1 py-3 text-center text-slate-500 dark:text-slate-400 cursor-pointer">${data.ext === 'py' ? 'Airflow Task Graph' : 'Schema Explorer'}</button>
+                                ${data.ext === 'sql' ? `<button onclick="switchLeftTab('${safeId}', 'preview')" id="tab-btn-${safeId}-preview" class="flex-1 py-3 text-center text-slate-500 dark:text-slate-400 cursor-pointer">AI Data Preview</button>` : ''}
                             </div>
                             
-                            <!-- TabContent 1: Linter Logs -->
-                            <div id="tab-content-${safeId}-linter" class="p-5">
+                            <div id="tab-content-${safeId}-linter" class="p-5" style="display: block;">
                                 <ul class="space-y-1">${fixesHtml}</ul>
                                 ${bqHtml}
                             </div>
-                            
-                            <!-- TabContent 2: Structured Table Columns Metadata Search -->
-                            <div id="tab-content-${safeId}-schema" class="p-5 hidden max-h-[350px] overflow-y-auto">
-                                ${schemaHtml}
-                            </div>
-
-                            <!-- TabContent 3: Structured AI Mock Preview -->
-                            <div id="tab-content-${safeId}-preview" class="p-5 hidden max-h-[350px] overflow-y-auto">
-                                <!-- Async generated mock table loaded here -->
-                            </div>
+                            <div id="tab-content-${safeId}-schema" class="p-5 max-h-[350px] overflow-y-auto" style="display: none;">${schemaHtml}</div>
+                            <div id="tab-content-${safeId}-preview" class="p-5 max-h-[350px] overflow-y-auto" style="display: none;"></div>
                         </div>
-                        <div class="bg-slate-50/50 dark:bg-slate-800/50 p-6 rounded-xl border border-slate-100 dark:border-slate-700 markdown-body max-h-[400px] overflow-y-auto">
-                            <h4 class="font-bold text-slate-900 dark:text-white text-xs uppercase tracking-widest mb-4 flex items-center gap-2"><div class="w-1.5 h-1.5 rounded-full bg-purple-500"></div> AI Architect Review</h4>
+
+                        <div class="bg-white/40 dark:bg-slate-800/30 p-6 rounded-xl border ${glowClass} markdown-body max-h-[400px] overflow-y-auto backdrop-blur-sm transition-all duration-300">
+                            <h4 class="font-bold text-slate-900 dark:text-white text-xs uppercase tracking-widest mb-4 flex items-center justify-between gap-2">
+                                <span class="flex items-center gap-2"><div class="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse"></div> AI Architect Review</span>
+                                ${isComplexOptimization ? '<span class="text-[9px] text-brand-500 bg-brand-50 dark:bg-brand-900/30 px-2 py-0.5 rounded-full">Deep Optimization Detected</span>' : ''}
+                            </h4>
                             <div class="text-sm text-slate-700 dark:text-slate-300">${marked.parse(data.reviewPart)}</div>
                         </div>
                     </div>
 
                     <div class="bg-slate-50 dark:bg-[#0f172a] rounded-xl border border-slate-200 dark:border-slate-700 shadow-xl overflow-hidden mb-6 relative">
-                        <div class="bg-slate-200 dark:bg-[#1e293b] px-4 py-2.5 flex items-center justify-between border-b border-slate-300 dark:border-slate-700/50">
+                        <div class="bg-white/80 dark:bg-[#1e293b] px-4 py-2.5 flex items-center justify-between border-b border-slate-200 dark:border-slate-700/50 backdrop-blur-md">
                             <div class="flex gap-2 items-center">
                                 <div class="flex gap-2 mr-4"><div class="w-3 h-3 rounded-full bg-[#ff5f56]"></div><div class="w-3 h-3 rounded-full bg-[#ffbd2e]"></div><div class="w-3 h-3 rounded-full bg-[#27c93f]"></div></div>
-                                <div class="flex bg-slate-300 dark:bg-slate-800/50 rounded-md p-0.5 border border-slate-400 dark:border-slate-700">
-                                    <button onclick="switchCodeView('${safeId}', 'refactored')" id="btn-${safeId}-refactored" class="text-[0.65rem] font-mono bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded px-2.5 py-1 uppercase tracking-wider transition-all shadow-sm">Refactored</button>
-                                    <button onclick="switchCodeView('${safeId}', 'original')" id="btn-${safeId}-original" class="text-[0.65rem] font-mono text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all">Original</button>
-                                    <button onclick="switchCodeView('${safeId}', 'diff')" id="btn-${safeId}-diff" class="text-[0.65rem] font-mono text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all">Diff</button>
+                                <div class="flex bg-slate-100 dark:bg-slate-800/50 rounded-md p-0.5 border border-slate-200 dark:border-slate-700">
+                                    <button onclick="switchCodeView('${safeId}', 'refactored')" id="btn-${safeId}-refactored" class="text-[0.65rem] font-mono bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded px-2.5 py-1 uppercase tracking-wider transition-all shadow-sm cursor-pointer">Refactored</button>
+                                    <button onclick="switchCodeView('${safeId}', 'original')" id="btn-${safeId}-original" class="text-[0.65rem] font-mono text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer">Original</button>
+                                    <button onclick="switchCodeView('${safeId}', 'splitdiff')" id="btn-${safeId}-splitdiff" class="text-[0.65rem] font-mono text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer">Split Diff View</button>
                                 </div>
                             </div>
                         </div>
-                        <div id="view-${safeId}-refactored" class="code-view block h-[400px] w-full border-t border-slate-200 dark:border-slate-700/50">
+                        <div id="view-${safeId}-refactored" class="code-view w-full border-t border-slate-200 dark:border-slate-700/50 h-[400px]" style="display: block;">
                             <div id="monaco-container-${safeId}" class="w-full h-full"></div>
                         </div>
-                        <div id="view-${safeId}-original" class="code-view hidden h-[400px] w-full overflow-y-auto bg-[#fffffe] dark:bg-[#1e1e1e] border-t border-slate-200 dark:border-slate-700/50 p-4 text-[13px] font-mono leading-relaxed text-slate-800 dark:text-[#d4d4d4]">
+                        <div id="view-${safeId}-original" class="code-view w-full overflow-y-auto bg-[#fffffe] dark:bg-[#1e1e1e] border-t border-slate-200 dark:border-slate-700/50 p-4 text-[13px] font-mono leading-relaxed text-slate-800 dark:text-[#d4d4d4] h-[400px]" style="display: none;">
                             <pre><code class="language-${data.ext}">${escapeHtml(data.originalCode || '')}</code></pre>
                         </div>
-                        <div id="view-${safeId}-diff" class="code-view hidden h-[400px] w-full overflow-y-auto bg-[#fffffe] dark:bg-[#1e1e1e] border-t border-slate-200 dark:border-slate-700/50 py-4 font-mono text-[13px] leading-relaxed">
-                            ${diffHtml}
+                        <div id="view-${safeId}-splitdiff" class="code-view w-full border-t border-slate-200 dark:border-slate-700/50 h-[400px]" style="display: none;">
+                            <div id="monaco-diff-container-${safeId}" class="w-full h-full"></div>
                         </div>
                     </div>
 
@@ -964,8 +1180,8 @@
                         <h4 class="font-bold text-slate-900 dark:text-white text-[0.65rem] uppercase tracking-widest mb-4 text-brand-600 dark:text-brand-400">Interact with Architect</h4>
                         <div class="max-h-48 overflow-y-auto pr-2">${chatHtml}</div>
                         <div class="flex flex-wrap items-center gap-3 mt-2">
-                            <textarea id="chat-input-${safeId}" rows="2" class="flex-grow min-w-[200px] bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-900 dark:text-white rounded-lg p-2.5 focus:bg-white dark:focus:bg-slate-800 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none text-sm font-medium transition-colors resize-none" placeholder="Ask to rewrite logic, explain concepts... (Shift+Enter for new line)" onkeydown="if(event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendChatMessage('${safeId}', '${data.filename}'); }"></textarea>
-                            <button onclick="sendChatMessage('${safeId}', '${data.filename}')" id="chat-btn-${safeId}" class="bg-brand-600 hover:bg-brand-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors">Send</button>
+                            <textarea id="chat-input-${safeId}" rows="2" class="flex-grow min-w-[200px] bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-900 dark:text-white rounded-lg p-2.5 focus:bg-white dark:focus:bg-slate-800 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none text-sm font-medium transition-colors resize-none" placeholder="Ask to rewrite logic, explain concepts... (Shift+Enter for new line)" onkeydown="if(event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendChatMessage('${safeId}'); }"></textarea>
+                            <button onclick="sendChatMessage('${safeId}')" id="chat-btn-${safeId}" class="bg-brand-600 hover:bg-brand-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer shadow-sm hover:-translate-y-0.5 transform">Send</button>
                             ${validateBtn}
                             ${commitBtn}
                         </div>
@@ -980,14 +1196,13 @@
         }
 
         function activateFile(id) {
-            document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active', 'bg-blue-50', 'dark:bg-slate-800'));
             const targetNav = document.getElementById(`nav-${id}`);
-            if(targetNav) targetNav.classList.add('active');
+            if(targetNav) targetNav.classList.add('active', 'bg-blue-50', 'dark:bg-slate-800');
 
             const canvas = document.getElementById('main-canvas');
             canvas.innerHTML = renderedFilePayloads[id];
 
-            // Re-initialize Monaco Editor for active file
             setTimeout(() => {
                 if (!window.monacoEditors) window.monacoEditors = {};
                 if (window.monacoEditors[id]) window.monacoEditors[id].dispose();
@@ -1014,7 +1229,7 @@
         }
 
         window.exportMarkdownReport = function() {
-            let mdContent = `# 🚀 AI Code Audit Report\n\n`;
+            let mdContent = `# 📑 AI Code Audit Report\n\n`;
             mdContent += `**Repository:** ${document.getElementById('repo').value}\n`;
             mdContent += `**Branch:** ${document.getElementById('branch').value}\n`;
             mdContent += `**Total Files Scanned:** ${document.getElementById('fileCount').textContent}\n`;
