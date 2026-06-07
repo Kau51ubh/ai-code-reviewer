@@ -6,7 +6,7 @@ import json
 import re
 import subprocess
 import urllib.request
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify
 from flask_cors import CORS 
 
 # Modern SDK imports
@@ -50,15 +50,21 @@ def get_changed_files(repo, base_branch, head_branch, token):
             raw_response = requests.get(raw_url, headers=headers)
             target_files.append({
                 "filename": file['filename'],
-                "content": raw_response.text
+                "content": raw_response.text,
+                # Blob SHA at HEAD — changes only when a new commit modifies the file.
+                # Used by the client to skip re-checking files with no new commits.
+                "sha": file.get('sha', '')
             })
             
     return target_files
 
 def needs_ai_review(filename, content):
+    # AI is reserved for genuine OPTIMIZATION work, which is BigQuery-SQL specific.
+    # Parameterization/compliance for .py/.ksh is handled deterministically by the linter,
+    # so those file types skip the AI entirely (faster, fewer tokens).
     if not filename.endswith('.sql'):
         return False
-        
+
     content_upper = content.upper()
     complex_keywords = ['JOIN ', 'GROUP BY', 'OVER (', 'PARTITION BY', 'UNION']
     return any(keyword in content_upper for keyword in complex_keywords)
@@ -253,37 +259,51 @@ def extract_refactored_code(markdown_text):
         return match.group(1).strip()
     return code_section.replace('```', '').strip()
 
-def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_schema=""):
-    if not needs_ai_review(filename, pre_cleaned_code):
-        ext = filename.split('.')[-1]
-        dummy_text = f"### 💡 Advanced Optimizations\nNo advanced architectural bottlenecks detected. AI review bypassed to save tokens (Simple code structure).\n\n### 🛠️ Final Refactored Code\n```{ext}\n{pre_cleaned_code}\n```"
-        return DummyResponse(dummy_text)
-
+def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_schema="", bq_error=""):
+    # NOTE: the decision to call this function (optimization vs. skip) is made by the caller
+    # (/process_file). This function always performs a real AI call.
     code_lines = pre_cleaned_code.split('\n')
     numbered_code = '\n'.join([f"{i+1:03d} | {line}" for i, line in enumerate(code_lines)])
-    
+
+    syntax_fix_directive = ""
+    if bq_error:
+        syntax_fix_directive = f"""
+    ⚠️ HIGHEST PRIORITY — THE CODE CURRENTLY FAILS BIGQUERY VALIDATION:
+    {bq_error}
+    Your PRIMARY task is to FIX this error so the query is valid BigQuery Standard SQL, while preserving the original intent.
+    Common causes: a stray semicolon splitting one statement into two, an invalid identifier (e.g. an unquoted column name with a space), or a dangling `AND`/`OR`.
+    In the "Advanced Optimizations" section, explain the root cause and your fix. Then output the corrected, valid query under "Final Refactored Code".
+    Do NOT output "No advanced architectural bottlenecks detected." — there is a real error that must be fixed.
+    """
+
     base_instructions = f"""
-    You are a Senior Data Architect specializing in Google BigQuery. 
+    You are a Senior Data Architect specializing in Google BigQuery.
     All SQL syntax, recommendations, and optimizations MUST strictly adhere to BigQuery Standard SQL.
-    
+    {syntax_fix_directive}
     CRITICAL RULES:
     1. Ensure `etl_batch_sk` is ALWAYS parameterized as `${{ETL_BATCH_SK}}` in all INSERT, UPDATE, SELECT, and DELETE statements you generate.
     2. NEVER alter the functional output or business logic of the SQL. Do NOT add, remove, or modify window function partitions (`PARTITION BY`), aggregations, or filters. Optimizations MUST preserve the exact same data output as the original query.
-    
+    3. CARTESIAN PRODUCT / MISSING JOIN CONDITION (correctness exception to Rule 2): If an `INNER JOIN`, a comma-join, or an implicit `JOIN` has NO `ON` (or `USING`) clause, treat it as a LIKELY BUG — an accidental Cartesian product — NOT as an intentional cross join. You MUST:
+       - Flag it prominently in the "Advanced Optimizations" section as a CRITICAL correctness risk (explain that the rows multiply because there is no join key).
+       - In the refactored code, DO NOT rewrite it to `CROSS JOIN`. Instead add an explicit join condition. If the LIVE SCHEMA shows an obvious shared key (e.g. both tables have `customer_id`), propose `ON a.customer_id = b.customer_id` and state in the notes that the key must be confirmed. If no shared key is evident, insert the literal placeholder `ON <JOIN_CONDITION_REQUIRED>` so the query cannot be committed until a human supplies the condition.
+       - Only leave a join as `CROSS JOIN` if the original code ALREADY says `CROSS JOIN` explicitly.
+    4. MISSING PARTITION BY (flag, do not silently rewrite): If a window function (`... OVER (...)`) has an `ORDER BY` but NO `PARTITION BY`, you MUST flag it in the "Advanced Optimizations" section as a potential correctness/performance risk — explain that the window then spans the ENTIRE table as one global frame (a full scan) instead of being scoped per group, which is frequently unintended. If the LIVE SCHEMA shows a natural grouping key (e.g. `customer_id`), recommend `PARTITION BY <key>` and state that it must be confirmed by a human. Never silently modify an EXISTING `PARTITION BY`.
+
     LIVE PRODUCTION SCHEMA DATA CONTEXT (Use this to verify column names and references):
     {live_schema}
-    
+
     REPO CONTEXT (Cross-file dependencies modified in this PR):
     {repo_context}
-    
-    The code below has ALREADY been pre-processed locally to fix basic syntax, parameterization, and timestamp functions. 
+
+    The code below has ALREADY been pre-processed locally to fix basic syntax, parameterization, and timestamp functions.
     DO NOT mention basic syntax fixes.
-    
+
     ONLY look for:
-    1. Architectural bottlenecks specific to BigQuery (e.g., poor JOIN strategies, cross-joins, inefficient window functions, failing to filter early, or bad scaling patterns).
-    2. Suggest optimizations for BigQuery query execution plans, slot utilization, and performance.
-    
-    If no severe bottlenecks exist, output EXACTLY: "No advanced architectural bottlenecks detected."
+    1. Correctness risks, especially JOINs missing an `ON`/`USING` condition (accidental Cartesian products) per Critical Rule 3.
+    2. Architectural bottlenecks specific to BigQuery (e.g., poor JOIN strategies, cross-joins, inefficient window functions, failing to filter early, or bad scaling patterns).
+    3. Suggest optimizations for BigQuery query execution plans, slot utilization, and performance.
+
+    If no correctness risks or severe bottlenecks exist, output EXACTLY: "No advanced architectural bottlenecks detected."
 
     Format your output strictly with these two headings:
     
@@ -315,7 +335,16 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_sc
 
 @app.route('/', methods=['GET'])
 def home():
-    return render_template('index.html')
+    # Serve index.html whether it sits next to this module or inside templates/.
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    for candidate in (
+        os.path.join(base_dir, 'index.html'),
+        os.path.join(base_dir, 'templates', 'index.html'),
+    ):
+        if os.path.exists(candidate):
+            with open(candidate, 'r', encoding='utf-8') as f:
+                return f.read()
+    return "index.html not found on server.", 500
 
 @app.route('/prepare', methods=['POST'])
 def prepare_review():
@@ -375,47 +404,41 @@ def process_single_file():
 
     try:
         start_time = time.time()
-        
-        pre_cleaned_code, local_linter_issues = process_file_locally(filename, content)
+
+        # Fetch the live schema up front so the deterministic linter can resolve small issues
+        # (column-name typos, unquoted string literals) WITHOUT spending AI tokens.
+        schema_meta = extract_tables_and_metadata(content) if filename.endswith('.sql') else {}
+
+        pre_cleaned_code, local_linter_issues = process_file_locally(filename, content, schema_meta)
         has_secrets = any("SECURITY ALERT" in issue for issue in local_linter_issues)
         
         bq_metrics = None
         bq_bytes = 0
         ai_review_markdown = ""
+        ai_optimized_code = ""   # AI suggestion shown in its own tab; never auto-applied.
         tokens_used = 0
         is_bypassed = False
         finops_status = "PASSED"
         structured_metadata = {}
         py_analysis = {}
 
+        # The deterministic linter (pre_cleaned_code) is ALWAYS the committed baseline.
+        # The AI is only an advisory optimizer that runs "if needed".
         if has_secrets:
-            ai_review_markdown = f"### 💡 Advanced Optimizations\nSecurity breach detected. AI review aborted.\n\n### 🛠️ Final Refactored Code\n```\n{content}\n```"
+            ai_review_markdown = "### 💡 Advanced Optimizations\n🔒 Security breach detected. Optimization review aborted until secrets are removed."
             is_bypassed = True
             finops_status = "SECURITY_HALT"
         else:
             live_schema = inject_live_schema_context(pre_cleaned_code) if filename.endswith('.sql') else ""
-            structured_metadata = extract_tables_and_metadata(pre_cleaned_code) if filename.endswith('.sql') else {}
+            structured_metadata = schema_meta  # reuse the schema already fetched for the linter
             py_analysis = parse_python_tasks(pre_cleaned_code) if filename.endswith('.py') else {}
-            
-            ai_response_obj = review_code_with_gemini(filename, pre_cleaned_code, repo_context, live_schema)
-            ai_review_markdown = ai_response_obj.text
-            try:
-                if ai_response_obj.usage_metadata:
-                    tokens_used = ai_response_obj.usage_metadata.total_token_count
-            except AttributeError:
-                is_bypassed = True
-            
-            refactored_code = extract_refactored_code(ai_review_markdown)
-            
-            # POST-PROCESS GUARANTEE
-            refactored_code, post_linter_issues = process_file_locally(filename, refactored_code)
-            
-            ext = filename.split('.')[-1]
-            ai_review_markdown = ai_review_markdown.split("### 🛠️ Final Refactored Code")[0] + f"### 🛠️ Final Refactored Code\n\n```{ext}\n{refactored_code}\n```"
 
+            # Step 2a: validate the LINTER-FIXED code first (for SQL), so we can detect syntax errors
+            # before deciding whether the AI is needed.
+            sql_syntax_error_msg = ""
             if filename.endswith('.sql'):
-                has_placeholders = any(x in refactored_code for x in ["<MISSING_FILTER_REQUIRED>", "(col1, col2, col3)", "TODO"])
-                
+                has_placeholders = any(x in pre_cleaned_code for x in ["<MISSING_FILTER_REQUIRED>", "<JOIN_CONDITION_REQUIRED>", "(col1, col2, col3)", "TODO"])
+
                 if has_placeholders:
                     bq_metrics = {
                         "valid": False,
@@ -423,17 +446,50 @@ def process_single_file():
                     }
                     finops_status = "CONTAIN_PLACEHOLDERS"
                 else:
-                    bq_metrics = perform_bq_dry_run(refactored_code)
+                    bq_metrics = perform_bq_dry_run(pre_cleaned_code)
                     bq_bytes = bq_metrics.get("bytes_processed", 0)
-                    
+
                     if not bq_metrics.get("valid"):
                         local_linter_issues.append(f"BigQuery Engine Error: {bq_metrics.get('message')}")
                         finops_status = "SYNTAX_ERROR"
+                        sql_syntax_error_msg = bq_metrics.get("message", "")
                     elif bq_bytes > FINOPS_MAX_BYTES_THRESHOLD:
                         finops_status = "FAILED_COST_GUARDRAIL"
                         bq_metrics["valid"] = False
                         bq_metrics["message"] = f"⚠️ FINOPS BLOCKED: Query structural plan consumes {bq_bytes / (1024**3):.2f} GB, exceeding environment maximum limit."
                         local_linter_issues.append("FinOps Exception: Execution plan exceeds maximum organizational compute thresholds.")
+
+            # Step 2b: escalate to the AI to OPTIMIZE complex SQL, or to FIX a detected syntax error.
+            if needs_ai_review(filename, pre_cleaned_code) or sql_syntax_error_msg:
+                ai_response_obj = review_code_with_gemini(filename, pre_cleaned_code, repo_context, live_schema, sql_syntax_error_msg)
+                raw_ai_markdown = ai_response_obj.text or ""
+                try:
+                    if ai_response_obj.usage_metadata:
+                        tokens_used = ai_response_obj.usage_metadata.total_token_count
+                except AttributeError:
+                    pass
+
+                # Advisory notes only — do NOT fold the rewrite back into the working code.
+                notes_part = raw_ai_markdown.split("### 🛠️ Final Refactored Code")[0].strip()
+                ai_review_markdown = notes_part or "### 💡 Advanced Optimizations\nSee the AI Optimized tab for the suggested rewrite."
+
+                # Extract the AI's suggested code and guarantee it still passes the linter.
+                suggested_code = extract_refactored_code(raw_ai_markdown)
+                suggested_code, _ = process_file_locally(filename, suggested_code, schema_meta)
+
+                # Surface an AI version only when it actually differs from the linter baseline.
+                if suggested_code.strip() and suggested_code.strip() != pre_cleaned_code.strip():
+                    ai_optimized_code = suggested_code
+
+                    # If the AI was fixing a syntax error, re-validate its suggestion so the
+                    # user can see whether the fix actually passes BigQuery.
+                    if sql_syntax_error_msg and not any(x in suggested_code for x in ["<MISSING_FILTER_REQUIRED>", "<JOIN_CONDITION_REQUIRED>", "(col1, col2, col3)", "TODO"]):
+                        fixed_metrics = perform_bq_dry_run(suggested_code)
+                        if fixed_metrics.get("valid"):
+                            local_linter_issues.append("AI Fix Available: A corrected, BigQuery-valid version is ready in the ✨ AI Optimized tab.")
+            else:
+                is_bypassed = True
+                ai_review_markdown = "### 💡 Advanced Optimizations\n✓ No advanced optimization required. The deterministic linter applied all parameterization and compliance fixes; the AI optimizer was skipped to save time and tokens."
 
         time_taken = round(time.time() - start_time, 2)
         estimated_cost = (tokens_used / 1000000) * 0.15
@@ -446,6 +502,8 @@ def process_single_file():
             "filename": filename,
             "unit_test_fixes": local_linter_issues,
             "ai_review": ai_review_markdown,
+            "linter_code": pre_cleaned_code,
+            "ai_optimized_code": ai_optimized_code,
             "bq_metrics": bq_metrics,
             "tokens": tokens_used,
             "time_taken": time_taken,
@@ -532,7 +590,7 @@ def validate_bq_route():
     if not code:
         return jsonify({"error": "No code provided."}), 400
     try:
-        if any(x in code for x in ["<MISSING_FILTER_REQUIRED>", "(col1, col2, col3)", "TODO"]):
+        if any(x in code for x in ["<MISSING_FILTER_REQUIRED>", "<JOIN_CONDITION_REQUIRED>", "(col1, col2, col3)", "TODO"]):
             return jsonify({
                 "valid": False, 
                 "message": "Dry Run Bypassed: Code contains active structural placeholders."
