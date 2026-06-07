@@ -16,9 +16,58 @@ def scan_for_secrets(content):
             
     return logs
 
-def pre_process_sql(filename, content):
+def apply_schema_fixes(content, schema, logs):
+    """Deterministic, schema-driven fixes — no AI/tokens needed.
+
+    schema: { 'dataset.table': [ {'name':..., 'type':..., 'mode':...}, ... ] }
+    Fixes:
+      - spaced column identifiers (e.g. `customer name` -> `customer_name`)
+      - unquoted string literals compared to a STRING column (e.g. `= kaustubh` -> `= 'kaustubh'`)
+    """
+    if not schema:
+        return content
+
+    col_types = {}            # lower_name -> TYPE
+    for cols in schema.values():
+        for f in cols:
+            name = (f.get('name') or '')
+            if name and name.lower() not in col_types:
+                col_types[name.lower()] = (f.get('type') or '').upper()
+    all_cols = set(col_types.keys())
+
+    # B. Correct spaced column identifiers to the schema's underscored name.
+    fixed_names = set()
+    for cols in schema.values():
+        for f in cols:
+            col = (f.get('name') or '')
+            if '_' not in col or col.lower() in fixed_names:
+                continue
+            # `customer_name` -> regex `\bcustomer\s+name\b` (matches a space, never an underscore)
+            pat = re.compile(r'\b' + r'\s+'.join(re.escape(p) for p in col.split('_')) + r'\b', re.IGNORECASE)
+            content, n = pat.subn(col, content)
+            if n:
+                logs.append(f"Fix: Corrected column name spacing to '{col}' using live schema.")
+                fixed_names.add(col.lower())
+
+    # C. Quote an unquoted RHS value compared to a STRING column.
+    def _quote(m):
+        col, op, val = m.group('col'), m.group('op'), m.group('val')
+        if (col.lower() in col_types and col_types[col.lower()] == 'STRING'
+                and val.lower() not in all_cols
+                and val.upper() not in ('TRUE', 'FALSE', 'NULL')):
+            logs.append(f"Fix: Quoted string literal for STRING column '{col}' using live schema.")
+            return f"{col} {op} '{val}'"
+        return m.group(0)
+    content = re.sub(
+        r"\b(?P<col>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<op>=)\s*(?P<val>[A-Za-z_][A-Za-z0-9_]*)\b",
+        _quote, content
+    )
+
+    return content
+
+def pre_process_sql(filename, content, schema=None):
     logs = []
-    
+
     # 1. Parameterize Hardcoded BigQuery Datasets
     dataset_pattern = re.compile(r'\bDB_AEDWD2\b', re.IGNORECASE)
     if dataset_pattern.search(content):
@@ -46,6 +95,14 @@ def pre_process_sql(filename, content):
         content = merge_pattern.sub(r"\1,", content)
         if "Fix: Merged multiple INSERT VALUES statements into a single batch statement." not in logs:
             logs.append("Fix: Merged multiple INSERT VALUES statements into a single batch statement.")
+
+    # 4b. Remove a stray semicolon that splits one statement (a fragment starting with AND/OR).
+    content, n_semi = re.subn(r';(\s*)\b(AND|OR)\b', r'\1\2', content, flags=re.IGNORECASE)
+    if n_semi:
+        logs.append("Fix: Removed a stray semicolon that incorrectly split a boolean/WHERE clause.")
+
+    # 4c. Schema-driven deterministic fixes (column spacing, string-literal quoting).
+    content = apply_schema_fixes(content, schema, logs)
 
     # 5. Process Statement by Statement
     statements = content.split(';')
@@ -197,13 +254,13 @@ def pre_process_py(filename, content):
 
     return content, logs
 
-def process_file_locally(filename, content):
+def process_file_locally(filename, content, schema=None):
     security_logs = scan_for_secrets(content)
     if security_logs:
         return content, security_logs
 
     if filename.endswith('.sql'):
-        return pre_process_sql(filename, content)
+        return pre_process_sql(filename, content, schema)
     elif filename.endswith('.ksh'):
         return pre_process_ksh(filename, content)
     elif filename.endswith('_INTERFACE_VM.py') or filename.endswith('.py'):
