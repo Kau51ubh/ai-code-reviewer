@@ -1,6 +1,8 @@
 Specific Refactoring Tasks:
 - Target Column List: If missing, explicitly define the target column list for INSERT statements.
 - Filter Requirement: Ensure UPDATE/DELETE statements have a WHERE clause.
+- Join Condition: Treat any JOIN missing an ON/USING clause as an accidental Cartesian product (a bug). Flag it as critical and add an explicit join condition (use a schema-evident key like `ON a.customer_id = b.customer_id`, or the placeholder `ON <JOIN_CONDITION_REQUIRED>`). Never silently convert it to CROSS JOIN.
+- Window Functions: If an OVER() window has ORDER BY but no PARTITION BY, always flag it — the window runs over the entire table as one frame, which is usually unintended. Recommend a `PARTITION BY <key>` using a schema-evident grouping key (confirm with a human). Do not change an existing PARTITION BY.
 - Multiple INSERTs: Consolidate multiple INSERT statements for a single table into one INSERT with multiple VALUES rows.
 - Environments: Parameterize hardcoded environment paths (e.g., /load/dev2/ to /load/${env}/).
 - Deep Optimization: Check for query execution plan bottlenecks, join order optimization, and scaling issues.
