@@ -278,6 +278,10 @@
                     <div class="w-full max-w-[100px] bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full mt-1.5 overflow-hidden">
                         <div id="finopsGauge" class="bg-blue-500 h-full transition-all duration-500" style="width: 0%"></div>
                     </div>
+                    <p class="text-[0.6rem] text-slate-400 mt-1.5 font-medium">Validated dry-run bytes only</p>
+                    <div class="hidden group-hover:block absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-slate-800 text-white text-[0.65rem] font-normal p-2.5 rounded-lg shadow-xl w-52 z-50 leading-relaxed">
+                        Reflects bytes from successful BigQuery dry runs. Files with structural placeholders (e.g. a missing WHERE) skip the dry run and contribute 0 GB.
+                    </div>
                 </div>
                 <div class="p-5 flex flex-col items-center justify-center text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
                     <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg> Files Scanned</p>
@@ -296,11 +300,18 @@
                     </button>
                 </div>
                 
-                <div class="flex gap-1 mb-4 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg overflow-x-auto text-[0.6rem] font-bold uppercase tracking-wider shrink-0">
-                    <button onclick="filterSidebar('all')" id="filter-all" class="flex-1 py-1.5 px-1 rounded-md bg-white dark:bg-slate-700 shadow-sm ring-1 ring-slate-300 dark:ring-slate-600 transition-colors text-slate-800 dark:text-white cursor-pointer">All</button>
-                    <button onclick="filterSidebar('issues')" id="filter-issues" class="flex-1 py-1.5 px-1 rounded-md text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors cursor-pointer">Issues</button>
-                    <button onclick="filterSidebar('autofix')" id="filter-autofix" class="flex-1 py-1.5 px-1 rounded-md text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors cursor-pointer">Fixed</button>
-                    <button onclick="filterSidebar('clean')" id="filter-clean" class="flex-1 py-1.5 px-1 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 transition-colors cursor-pointer">Clean</button>
+                <div class="flex gap-1 mb-3 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg overflow-x-auto text-[0.6rem] font-bold uppercase tracking-wider shrink-0">
+                    <button onclick="filterSidebar('all')" id="filter-all" class="flex-1 py-1.5 px-1 rounded-md bg-white dark:bg-slate-700 shadow-sm ring-1 ring-slate-300 dark:ring-slate-600 transition-colors text-slate-800 dark:text-white cursor-pointer">All <span id="count-all" class="ml-0.5 opacity-60">0</span></button>
+                    <button onclick="filterSidebar('issues')" id="filter-issues" class="flex-1 py-1.5 px-1 rounded-md text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors cursor-pointer">Issues <span id="count-issues" class="ml-0.5 opacity-60">0</span></button>
+                    <button onclick="filterSidebar('autofix')" id="filter-autofix" class="flex-1 py-1.5 px-1 rounded-md text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors cursor-pointer">Fixed <span id="count-autofix" class="ml-0.5 opacity-60">0</span></button>
+                    <button onclick="filterSidebar('clean')" id="filter-clean" class="flex-1 py-1.5 px-1 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 transition-colors cursor-pointer">Clean <span id="count-clean" class="ml-0.5 opacity-60">0</span></button>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mb-4 px-2 text-[0.6rem] font-semibold text-slate-400 dark:text-slate-500">
+                    <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>Issues / Critical</span>
+                    <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Optimize</span>
+                    <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-blue-500"></span>Auto-Fixed</span>
+                    <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Clean</span>
                 </div>
 
                 <ul id="sidebar-list" class="space-y-2 max-h-[calc(100vh-280px)] overflow-y-auto pr-1 pb-4"></ul>
@@ -329,6 +340,16 @@
             <div>
                 <p class="font-bold text-slate-900 dark:text-white text-sm mb-1">Action Required</p>
                 <p id="errorDetails" class="text-slate-600 dark:text-slate-400 text-sm"></p>
+            </div>
+        </div>
+
+        <div id="infoBanner" style="display: none;" class="bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-900/50 p-5 rounded-xl shadow-sm mb-8 flex items-center gap-4">
+            <div class="bg-emerald-50 dark:bg-emerald-900/30 p-2 rounded-full text-emerald-500 dark:text-emerald-400 shrink-0">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+            </div>
+            <div>
+                <p class="font-bold text-slate-900 dark:text-white text-sm mb-1">Up to date</p>
+                <p id="infoDetails" class="text-slate-600 dark:text-slate-400 text-sm"></p>
             </div>
         </div>
 
@@ -526,12 +547,27 @@
                 else btn.classList.remove('bg-white', 'dark:bg-slate-700', 'shadow-sm', 'ring-1', 'ring-slate-300', 'dark:ring-slate-600');
             });
             document.querySelectorAll('.sidebar-item').forEach(li => {
-                li.style.display = (status === 'all' || li.dataset.status === status) ? 'flex' : 'none';
+                const s = li.dataset.status;
+                // 'Optimize' findings are actionable, so they live under the Issues filter.
+                const match = status === 'all' || s === status || (status === 'issues' && s === 'optimize');
+                li.style.display = match ? 'flex' : 'none';
             });
         }
 
+        window.updateFilterCounts = function() {
+            const items = document.querySelectorAll('.sidebar-item');
+            const counts = { all: items.length, issues: 0, autofix: 0, clean: 0, optimize: 0 };
+            items.forEach(li => { counts[li.dataset.status] = (counts[li.dataset.status] || 0) + 1; });
+            const set = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
+            set('count-all', counts.all);
+            // 'Optimize' files have no dedicated tab, so surface them alongside issues in the count.
+            set('count-issues', counts.issues + counts.optimize);
+            set('count-autofix', counts.autofix);
+            set('count-clean', counts.clean);
+        }
+
         window.switchCodeView = function(fileId, viewType) {
-            ['refactored', 'original', 'splitdiff'].forEach(type => {
+            ['refactored', 'original', 'splitdiff', 'optimized'].forEach(type => {
                 const btn = document.getElementById(`btn-${fileId}-${type}`);
                 const view = document.getElementById(`view-${fileId}-${type}`);
                 if (btn && view) {
@@ -578,6 +614,60 @@
                     }
                 }, 50);
             }
+
+            if (viewType === 'optimized') {
+                if (!window.monacoDiffEditors) window.monacoDiffEditors = {};
+                const optKey = fileId + '-opt';
+
+                setTimeout(() => {
+                    if (!window.monacoDiffEditors[optKey]) {
+                        const data = window.fileDataStore[fileId];
+                        const langMap = { 'py': 'python', 'sql': 'sql', 'ksh': 'shell' };
+                        const isDark = document.documentElement.classList.contains('dark');
+
+                        const container = document.getElementById(`monaco-opt-container-${fileId}`);
+                        if (!container) return;
+
+                        const diffEditor = monaco.editor.createDiffEditor(container, {
+                            theme: isDark ? 'vs-dark' : 'vs-light',
+                            automaticLayout: true,
+                            readOnly: true,
+                            fontSize: 13,
+                            minimap: { enabled: false },
+                            renderSideBySide: true
+                        });
+
+                        // Left = linter baseline (what would be committed), Right = AI suggestion.
+                        diffEditor.setModel({
+                            original: monaco.editor.createModel(data.pureRefactoredCode || '', langMap[data.ext] || 'plaintext'),
+                            modified: monaco.editor.createModel(data.aiOptimizedCode || '', langMap[data.ext] || 'plaintext')
+                        });
+                        window.monacoDiffEditors[optKey] = diffEditor;
+                    } else {
+                        window.monacoDiffEditors[optKey].layout();
+                    }
+                }, 50);
+            }
+        };
+
+        window.applyOptimization = function(fileId) {
+            const data = window.fileDataStore[fileId];
+            if (!data || !data.aiOptimizedCode) return;
+            // Apply the AI suggestion into the editable Refactored editor (becomes the commit target).
+            data.pureRefactoredCode = data.aiOptimizedCode;
+            if (window.monacoEditors && window.monacoEditors[fileId]) {
+                window.monacoEditors[fileId].setValue(data.aiOptimizedCode);
+            }
+            // Reset cached diff editors so they reflect the newly applied code next time they open.
+            ['', '-opt'].forEach(suffix => {
+                const key = fileId + suffix;
+                if (window.monacoDiffEditors && window.monacoDiffEditors[key]) {
+                    window.monacoDiffEditors[key].dispose();
+                    delete window.monacoDiffEditors[key];
+                }
+            });
+            switchCodeView(fileId, 'refactored');
+            showToast("AI optimization applied to the editor. Review, then Push to Branch.", "success");
         };
 
         window.switchLeftTab = function(fileId, tabName) {
@@ -719,6 +809,18 @@
 
         // --- Core Execution Logic ---
 
+        // Commit-aware run cache: remembers each file's blob SHA + result from the last run,
+        // so a re-run can skip files that have no new commits (saving time and tokens).
+        const RUN_CACHE_KEY = 'aicr_run_cache_v1';
+        function loadRunCache() {
+            try { return JSON.parse(localStorage.getItem(RUN_CACHE_KEY)) || {}; }
+            catch (e) { return {}; }
+        }
+        function saveRunCache(cache) {
+            try { localStorage.setItem(RUN_CACHE_KEY, JSON.stringify(cache)); }
+            catch (e) { /* storage full or disabled — caching is best-effort */ }
+        }
+
         function startLoadingText(overrideText = null) {
             clearInterval(loadingInterval);
             const el = document.getElementById('loadingText');
@@ -728,14 +830,47 @@
             loadingInterval = setInterval(() => { i = (i + 1) % texts.length; el.textContent = texts[i]; }, 2500);
         }
 
+        function resetRunUI() {
+            // Always start a run from a clean slate — never show the previous run's dashboard/results.
+            ['errorMessage', 'infoBanner', 'results-layout', 'metricsBar', 'scanDashboard'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = 'none';
+            });
+
+            document.getElementById('sidebar-list').innerHTML = '';
+            renderedFilePayloads = {};
+            window.fileDataStore = {};
+
+            // Dispose any live Monaco editors left over from the previous run.
+            ['monacoEditors', 'monacoDiffEditors'].forEach(store => {
+                if (window[store]) {
+                    Object.values(window[store]).forEach(ed => { try { ed.dispose(); } catch (e) {} });
+                    window[store] = {};
+                }
+            });
+
+            const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+            // Loading dashboard
+            set('actualFiles', '0 / 0'); set('actualTime', '0.0s'); set('actualTokens', '0');
+            set('estTime', '0s'); set('estTokens', '0'); set('estCost', '$0');
+            // Metrics bar
+            set('timeTaken', '0.0s'); set('tokenCount', '0'); set('finopsCost', '$0.00');
+            set('dataScanned', '0.00 GB'); set('fileCount', '0');
+            const gauge = document.getElementById('finopsGauge');
+            if (gauge) { gauge.style.width = '0%'; gauge.className = 'bg-blue-500 h-full transition-all duration-500'; }
+
+            clearInterval(loadingInterval);
+            document.getElementById('loadingText').textContent = 'Fetching metadata...';
+        }
+
         async function runReview() {
             const repoInput = document.getElementById('repo');
             const branchInput = document.getElementById('branch');
             const baseBranchInput = document.getElementById('base_branch');
             const reviewBtn = document.getElementById('reviewBtn');
             const payload = { repo: repoInput.value, branch: branchInput.value, base_branch: baseBranchInput.value };
-            
-            document.getElementById('errorMessage').style.display = 'none';
+
+            resetRunUI();
             document.getElementById('loading').style.display = 'block';
             
             reviewBtn.disabled = true;
@@ -750,59 +885,99 @@
                 const files = prepData.files;
                 if(!files || files.length === 0) throw new Error("No valid files found to review.");
 
-                document.getElementById('estTime').textContent = prepData.estimates.estimated_time + 's';
-                document.getElementById('estTokens').textContent = prepData.estimates.estimated_tokens.toLocaleString();
-                document.getElementById('estCost').textContent = prepData.estimates.estimated_cost < 0.01 ? '< $0.01' : '$' + prepData.estimates.estimated_cost.toFixed(3);
-                
                 let actualTokens = 0, actualTime = 0, totalBytes = 0, totalCost = 0;
-                document.getElementById('actualFiles').textContent = `0 / ${files.length}`;
-                document.getElementById('actualTokens').textContent = '0';
-                document.getElementById('actualTime').textContent = '0.0s';
-                
+
                 document.getElementById('sidebar-list').innerHTML = '';
                 renderedFilePayloads = {};
                 window.fileDataStore = {};
 
                 document.getElementById('results-layout').style.display = 'flex';
-                document.getElementById('metricsBar').style.display = 'block'; 
+                document.getElementById('metricsBar').style.display = 'block';
                 document.getElementById('scanDashboard').style.display = 'block';
 
                 const repoContextStr = files.map(f => f.filename).join(", ");
+                const repoVal = repoInput.value;
+                const branchVal = branchInput.value;
 
-                for (let i = 0; i < files.length; i++) {
-                    const currentFile = files[i];
-                    startLoadingText(`Scanning [${i+1}/${files.length}]: ${currentFile.filename}`);
-                    
+                // Commit-aware incremental run: decide UP FRONT which files actually need scanning
+                // (changed since the last run), so all counters reflect this run, not the full repo.
+                const runCache = loadRunCache();
+                const plan = files.map(f => {
+                    const key = `${repoVal}::${branchVal}::${f.filename}`;
+                    const c = runCache[key];
+                    const willSkip = !!(c && f.sha && c.sha === f.sha && c.result);
+                    return { file: f, key, willSkip };
+                });
+                const toProcessCount = plan.filter(p => !p.willSkip).length;
+                let skippedCount = 0, processedCount = 0;
+
+                // Estimate based ONLY on the files that will actually be scanned this run.
+                const complexRe = /\bJOIN\b|\bGROUP\s+BY\b|OVER\s*\(|\bPARTITION\s+BY\b|\bUNION\b/i;
+                let estAiFiles = 0, estAiChars = 0;
+                plan.filter(p => !p.willSkip).forEach(p => {
+                    const f = p.file;
+                    if (f.filename.toLowerCase().endsWith('.sql') && complexRe.test(f.content || '')) {
+                        estAiFiles++; estAiChars += (f.content || '').length;
+                    }
+                });
+                const estTimeVal = toProcessCount ? (2.0 + estAiFiles * 10 + (toProcessCount - estAiFiles) * 0.2) : 0;
+                const estTokensVal = Math.round(estAiChars * 0.3 + estAiFiles * 1600);
+                const estCostVal = estTokensVal / 1000000 * 0.15;
+                document.getElementById('estTime').textContent = estTimeVal.toFixed(1) + 's';
+                document.getElementById('estTokens').textContent = estTokensVal.toLocaleString();
+                document.getElementById('estCost').textContent = estTokensVal === 0 ? '$0' : (estCostVal < 0.01 ? '< $0.01' : '$' + estCostVal.toFixed(3));
+
+                document.getElementById('actualFiles').textContent = `0 / ${toProcessCount}`;
+                document.getElementById('actualTokens').textContent = '0';
+                document.getElementById('actualTime').textContent = '0.0s';
+
+                for (let i = 0; i < plan.length; i++) {
+                    const { file: currentFile, key: cacheKey, willSkip } = plan[i];
+
+                    if (willSkip) {
+                        // No new commit since the last run → skip entirely and do NOT render it.
+                        skippedCount++;
+                        startLoadingText(`No new commit — skipping ${currentFile.filename} (${skippedCount} skipped)`);
+                        continue;
+                    }
+
+                    processedCount++;
+                    startLoadingText(`Scanning [${processedCount}/${toProcessCount}]: ${currentFile.filename}`);
                     const processPayload = {
                         ...currentFile,
                         repo_context: `The following files are also part of this PR context: ${repoContextStr}`,
-                        repo_name: repoInput.value
+                        repo_name: repoVal
                     };
 
                     const processResponse = await fetch(PROCESS_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(processPayload) });
                     const fileResult = await processResponse.json();
                     if (!processResponse.ok) throw new Error(fileResult.error || `Failed on ${currentFile.filename}`);
+                    fileResult._cached = false;
 
-                    if (i === 0 && fileResult.user_email) {
-                        document.getElementById('user-badge-email').innerText = fileResult.user_email;
-                        document.getElementById('user-badge-initial').innerText = fileResult.user_email.charAt(0).toUpperCase();
-                    }
-
+                    // Only freshly-processed files add to the token/time/cost totals.
                     actualTokens += fileResult.tokens || 0;
                     actualTime += fileResult.time_taken || 0;
                     totalBytes += fileResult.bq_bytes || 0;
                     totalCost += fileResult.cost || 0;
-                    
+
+                    // Cache this result against its commit SHA for the next run.
+                    runCache[cacheKey] = { sha: currentFile.sha || '', result: fileResult };
+
+                    if (processedCount === 1 && fileResult.user_email) {
+                        document.getElementById('user-badge-email').innerText = fileResult.user_email;
+                        document.getElementById('user-badge-initial').innerText = fileResult.user_email.charAt(0).toUpperCase();
+                    }
+
                     document.getElementById('actualTokens').textContent = actualTokens.toLocaleString();
                     document.getElementById('actualTime').textContent = actualTime.toFixed(1) + 's';
-                    document.getElementById('actualFiles').textContent = `${i+1} / ${files.length}`;
+                    document.getElementById('actualFiles').textContent = `${processedCount} / ${toProcessCount}`;
                     document.getElementById('timeTaken').textContent = actualTime.toFixed(1) + "s";
                     document.getElementById('tokenCount').textContent = actualTokens.toLocaleString();
                     document.getElementById('finopsCost').textContent = "$" + totalCost.toFixed(3);
-                    
+
                     const scannedGB = totalBytes / 1073741824;
                     document.getElementById('dataScanned').textContent = scannedGB.toFixed(2) + " GB";
-                    
+
                     const quotaPercent = Math.min((scannedGB / 10) * 100, 100);
                     const gauge = document.getElementById('finopsGauge');
                     gauge.style.width = `${quotaPercent}%`;
@@ -810,11 +985,23 @@
                     else if(quotaPercent > 40) gauge.className = 'bg-amber-500 h-full transition-all duration-500';
                     else gauge.className = 'bg-blue-500 h-full transition-all duration-500';
 
-                    document.getElementById('fileCount').textContent = `${i+1}`;
+                    document.getElementById('fileCount').textContent = `${processedCount}`;
 
-                    renderSingleFile(fileResult, i === 0);
+                    renderSingleFile(fileResult, processedCount === 1);
                 }
+
+                saveRunCache(runCache);
                 document.getElementById('loading').style.display = 'none';
+
+                if (processedCount === 0) {
+                    // Nothing changed since the last run — show only a message, no file list.
+                    document.getElementById('results-layout').style.display = 'none';
+                    document.getElementById('metricsBar').style.display = 'none';
+                    document.getElementById('infoDetails').textContent = `No new commits since the last run — all ${skippedCount} file(s) are up to date. Nothing to review.`;
+                    document.getElementById('infoBanner').style.display = 'flex';
+                } else if (skippedCount > 0) {
+                    showToast(`Reviewed ${processedCount} changed file(s); skipped ${skippedCount} with no new commits.`, "info");
+                }
 
             } catch (error) {
                 document.getElementById('loading').style.display = 'none';
@@ -933,26 +1120,12 @@
             const safeId = 'file-' + filename.replace(/[^a-zA-Z0-9]/g, '-');
             const ext = filename.split('.').pop().toLowerCase();
             
-            let cleanAiMarkdown = (fileResult.ai_review || '').trim();
-            let reviewPart = cleanAiMarkdown;
-            let codePart = '';
-            
-            const codeHeaderRegex = /### 🛠️ Final Refactored Code\s*/i;
-            if (codeHeaderRegex.test(cleanAiMarkdown)) {
-                const parts = cleanAiMarkdown.split(codeHeaderRegex);
-                reviewPart = parts[0].trim();
-                let rawCodePart = parts[1] ? parts[1].trim() : '';
-                
-                const codeBlockStart = rawCodePart.indexOf('```');
-                if (codeBlockStart > 0) {
-                    reviewPart += '\n\n**Additional Notes:**\n' + rawCodePart.substring(0, codeBlockStart).trim();
-                    codePart = rawCodePart.substring(codeBlockStart).trim();
-                } else { codePart = rawCodePart; }
-            }
-
-            let pureRefactoredCode = codePart;
-            const codeMatch = codePart.match(/^```[a-z]*\n([\s\S]*)\n```$/i);
-            if (codeMatch) { pureRefactoredCode = codeMatch[1]; }
+            // ai_review now carries advisory notes only (no embedded code block).
+            let reviewPart = (fileResult.ai_review || '').trim();
+            // The deterministic linter output is the committed baseline shown in "Refactored".
+            let pureRefactoredCode = (fileResult.linter_code != null) ? fileResult.linter_code : (fileResult.original_code || '');
+            // The AI's suggested rewrite lives in its own tab and is never auto-applied.
+            let aiOptimizedCode = fileResult.ai_optimized_code || '';
 
             window.fileDataStore[safeId] = {
                 filename: filename, ext: ext,
@@ -960,26 +1133,36 @@
                 reviewPart: reviewPart,
                 originalCode: fileResult.original_code || '',
                 pureRefactoredCode: pureRefactoredCode,
+                aiOptimizedCode: aiOptimizedCode,
                 bq_metrics: fileResult.bq_metrics || null,
                 schema_explorer: fileResult.schema_explorer || {},
                 airflow_tasks: fileResult.airflow_tasks || {},
                 scorecard: fileResult.scorecard || { performance: 100, cost_efficiency: 100, security: 100, compliance: 100 },
-                chatHistory: [] 
+                cached: !!fileResult._cached,
+                chatHistory: []
             };
 
             const contentLower = reviewPart.toLowerCase();
-            let hasLocalErrors = window.fileDataStore[safeId].localFixesArray.some(issue => issue.toLowerCase().includes('error') || issue.toLowerCase().includes('critical') || issue.toLowerCase().includes('security'));
-            
+            const fixesArray = window.fileDataStore[safeId].localFixesArray;
+            let hasLocalErrors = fixesArray.some(issue => issue.toLowerCase().includes('error') || issue.toLowerCase().includes('critical') || issue.toLowerCase().includes('security'));
+            // Critical = data-loss / security / cost-guardrail issues that need human attention before commit.
+            let isCritical = fixesArray.some(issue => /critical|security|finops|dangerous|mandatory where/i.test(issue)) || contentLower.includes('security breach');
+
             let statusId = 'clean';
-            let dotColor = 'text-emerald-500'; 
+            let dotColor = 'text-emerald-500';
             let iconHtml = `<svg class="w-4 h-4 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>`;
             let badgeHtml = `<span class="bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Clean</span>`;
-            
+
             if (hasLocalErrors || contentLower.includes('syntax error') || contentLower.includes('rule violation') || contentLower.includes('security breach')) {
                 statusId = 'issues';
-                iconHtml = `<svg class="w-4 h-4 text-red-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>`;
-                badgeHtml = `<span class="bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Issues</span>`;
-            } else if (contentLower.includes('no advanced architectural') || contentLower.includes('bypassed')) {
+                if (isCritical) {
+                    iconHtml = `<svg class="w-4 h-4 text-red-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`;
+                    badgeHtml = `<span class="bg-red-600 text-white border border-red-700 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase shadow-sm">Critical</span>`;
+                } else {
+                    iconHtml = `<svg class="w-4 h-4 text-red-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>`;
+                    badgeHtml = `<span class="bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Issues</span>`;
+                }
+            } else if (contentLower.includes('no advanced architectural') || contentLower.includes('no advanced optimization') || contentLower.includes('bypassed')) {
                 if (window.fileDataStore[safeId].localFixesArray.length > 0) {
                     statusId = 'autofix';
                     iconHtml = `<svg class="w-4 h-4 text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>`;
@@ -1012,6 +1195,7 @@
                 </div>
             `;
             sidebarList.appendChild(sidebarItem);
+            updateFilterCounts();
 
             renderMainCanvasHTML(safeId);
             if (isFirstFile) activateFile(safeId);
@@ -1111,6 +1295,15 @@
                 chatHtml += `</div>`;
             }
 
+            const chatSuggestions = ({
+                sql: ['Explain the changes', 'Add a WHERE filter', 'Optimize the joins', 'Reduce bytes scanned'],
+                py: ['Explain the changes', 'Add error handling', 'Review the DAG schedule'],
+                ksh: ['Explain the changes', 'Add error handling', 'Harden this script']
+            })[data.ext] || ['Explain the changes', 'Suggest improvements'];
+            const chipsHtml = chatSuggestions.map(s =>
+                `<button type="button" onclick="const t=document.getElementById('chat-input-${safeId}'); t.value='${s}'; t.focus();" class="text-[0.65rem] font-medium px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600 hover:bg-brand-50 dark:hover:bg-brand-900/30 hover:text-brand-600 dark:hover:text-brand-400 transition-colors cursor-pointer">${s}</button>`
+            ).join('');
+
             let validateBtn = data.ext === 'sql' ? `<button onclick="validateWithBQ('${safeId}')" id="val-btn-${safeId}" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer whitespace-nowrap shadow-sm hover:-translate-y-0.5 transform">Validate BQ</button>` : '';
             let commitBtn = `<button onclick="pushToGitHub('${safeId}')" ${isFinOpsBlocked ? 'disabled title="Blocked by FinOps Threshold"' : ''} class="px-5 py-2.5 rounded-lg text-sm font-medium text-white transition-colors cursor-pointer whitespace-nowrap shadow-sm hover:-translate-y-0.5 transform ${isFinOpsBlocked ? 'bg-slate-400 cursor-not-allowed opacity-50' : 'bg-slate-900 hover:bg-slate-800 dark:bg-slate-700 dark:hover:bg-slate-600'}">Push to Branch</button>`;
 
@@ -1122,6 +1315,7 @@
                     <div class="flex items-center justify-between mb-8 border-b border-slate-100 dark:border-slate-800 pb-4">
                         <h2 class="text-xl font-mono font-bold text-slate-800 dark:text-white truncate">${data.filename}</h2>
                         <div class="flex items-center gap-3 shrink-0 pl-2">
+                            ${data.cached ? `<span title="No new commits since the last run — cached result reused (no tokens spent)." class="text-[0.65rem] font-bold px-2.5 py-1 rounded-md uppercase tracking-wider bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 flex items-center gap-1">↺ Cached</span>` : ''}
                             <button onclick="openScorecardModal('${safeId}')" class="px-3.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-800/50 text-xs font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex items-center gap-1.5 text-slate-700 dark:text-slate-300 shadow-sm uppercase tracking-wider backdrop-blur-sm cursor-pointer">
                                 📊 View Quality Scorecard
                             </button>
@@ -1159,9 +1353,10 @@
                             <div class="flex gap-2 items-center">
                                 <div class="flex gap-2 mr-4"><div class="w-3 h-3 rounded-full bg-[#ff5f56]"></div><div class="w-3 h-3 rounded-full bg-[#ffbd2e]"></div><div class="w-3 h-3 rounded-full bg-[#27c93f]"></div></div>
                                 <div class="flex bg-slate-100 dark:bg-slate-800/50 rounded-md p-0.5 border border-slate-200 dark:border-slate-700">
-                                    <button onclick="switchCodeView('${safeId}', 'refactored')" id="btn-${safeId}-refactored" class="text-[0.65rem] font-mono bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded px-2.5 py-1 uppercase tracking-wider transition-all shadow-sm cursor-pointer">Refactored</button>
+                                    <button onclick="switchCodeView('${safeId}', 'refactored')" id="btn-${safeId}-refactored" class="text-[0.65rem] font-mono bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded px-2.5 py-1 uppercase tracking-wider transition-all shadow-sm cursor-pointer">Linter Fixed</button>
                                     <button onclick="switchCodeView('${safeId}', 'original')" id="btn-${safeId}-original" class="text-[0.65rem] font-mono text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer">Original</button>
                                     <button onclick="switchCodeView('${safeId}', 'splitdiff')" id="btn-${safeId}-splitdiff" class="text-[0.65rem] font-mono text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer">Split Diff View</button>
+                                    ${data.aiOptimizedCode ? `<button onclick="switchCodeView('${safeId}', 'optimized')" id="btn-${safeId}-optimized" class="text-[0.65rem] font-mono text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-300 bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer">✨ AI Optimized</button>` : ''}
                                 </div>
                             </div>
                         </div>
@@ -1174,11 +1369,20 @@
                         <div id="view-${safeId}-splitdiff" class="code-view w-full border-t border-slate-200 dark:border-slate-700/50 h-[400px]" style="display: none;">
                             <div id="monaco-diff-container-${safeId}" class="w-full h-full"></div>
                         </div>
+                        ${data.aiOptimizedCode ? `
+                        <div id="view-${safeId}-optimized" class="code-view w-full border-t border-slate-200 dark:border-slate-700/50" style="display: none;">
+                            <div class="flex items-center justify-between gap-3 px-4 py-2 bg-purple-50/60 dark:bg-purple-900/20 border-b border-purple-100 dark:border-purple-900/40">
+                                <p class="text-[0.7rem] text-purple-700 dark:text-purple-300 font-medium">Advisory only — left is the linter-fixed baseline, right is the AI suggestion. Nothing is changed until you apply it.</p>
+                                <button onclick="applyOptimization('${safeId}')" class="shrink-0 text-[0.65rem] font-bold uppercase tracking-wider bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg shadow-sm transition-colors cursor-pointer">Apply to Editor</button>
+                            </div>
+                            <div id="monaco-opt-container-${safeId}" class="w-full h-[360px]"></div>
+                        </div>` : ''}
                     </div>
 
                     <div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-5 shadow-sm">
                         <h4 class="font-bold text-slate-900 dark:text-white text-[0.65rem] uppercase tracking-widest mb-4 text-brand-600 dark:text-brand-400">Interact with Architect</h4>
                         <div class="max-h-48 overflow-y-auto pr-2">${chatHtml}</div>
+                        <div class="flex flex-wrap gap-2 mb-3">${chipsHtml}</div>
                         <div class="flex flex-wrap items-center gap-3 mt-2">
                             <textarea id="chat-input-${safeId}" rows="2" class="flex-grow min-w-[200px] bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-900 dark:text-white rounded-lg p-2.5 focus:bg-white dark:focus:bg-slate-800 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none text-sm font-medium transition-colors resize-none" placeholder="Ask to rewrite logic, explain concepts... (Shift+Enter for new line)" onkeydown="if(event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendChatMessage('${safeId}'); }"></textarea>
                             <button onclick="sendChatMessage('${safeId}')" id="chat-btn-${safeId}" class="bg-brand-600 hover:bg-brand-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer shadow-sm hover:-translate-y-0.5 transform">Send</button>
@@ -1202,6 +1406,18 @@
 
             const canvas = document.getElementById('main-canvas');
             canvas.innerHTML = renderedFilePayloads[id];
+
+            // The canvas HTML was just rebuilt, so the diff containers are fresh/empty.
+            // Drop any cached diff editors for this file; switchCodeView will recreate them
+            // against the new DOM instead of laying out a detached, stale editor (which renders blank).
+            if (window.monacoDiffEditors) {
+                [id, id + '-opt'].forEach(key => {
+                    if (window.monacoDiffEditors[key]) {
+                        window.monacoDiffEditors[key].dispose();
+                        delete window.monacoDiffEditors[key];
+                    }
+                });
+            }
 
             setTimeout(() => {
                 if (!window.monacoEditors) window.monacoEditors = {};
