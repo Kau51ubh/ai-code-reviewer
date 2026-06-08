@@ -7,25 +7,89 @@ import re
 import subprocess
 import urllib.request
 from flask import Flask, request, jsonify
-from flask_cors import CORS 
+from flask_cors import CORS
 
 # Modern SDK imports
 from google import genai
 from google.cloud import bigquery
 from github import Github
 
+try:
+    from google.genai import types as genai_types
+except Exception:
+    genai_types = None
+
 # Import our local rule engine
 from linter import process_file_locally
 
 app = Flask(__name__)
-CORS(app) 
+CORS(app)
 
 # Initialize the new Google GenAI Client
 client = genai.Client(vertexai=True, location="us-central1")
 bq_client = bigquery.Client()
 
 BQ_ANALYTICS_TABLE = os.environ.get("BQ_ANALYTICS_TABLE", "code_review_analytics.scan_history")
-FINOPS_MAX_BYTES_THRESHOLD = int(os.environ.get("FINOPS_MAX_BYTES_THRESHOLD", 10 * 1024 * 1024 * 1024)) 
+FINOPS_MAX_BYTES_THRESHOLD = int(os.environ.get("FINOPS_MAX_BYTES_THRESHOLD", 10 * 1024 * 1024 * 1024))
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
+
+def _parse_kv(raw):
+    """Parse 'A=1,B=2' into {'A':'1','B':'2'} — used for generic, deployment-driven config."""
+    out = {}
+    for pair in (raw or '').split(','):
+        pair = pair.strip()
+        if '=' in pair:
+            k, v = pair.split('=', 1)
+            k, v = k.strip(), v.strip()
+            if k:
+                out[k] = v
+    return out
+
+
+# --- Generic, deployment-configured conventions (NO hardcoded business names) ---
+# ${TEMPLATE_VAR} dataset references -> the real BigQuery dataset they resolve to.
+# Used to fetch the LIVE schema and to make dry-runs parseable. Override per deployment.
+SQL_DATASET_MAP = _parse_kv(os.environ.get("SQL_DATASET_MAP", "AEDW_DB=DB_AEDWD2"))
+# Other ${TEMPLATE_VAR} placeholders -> concrete values, used only so a dry-run can parse.
+SQL_RUNTIME_VARS = _parse_kv(os.environ.get("SQL_RUNTIME_VARS", "ETL_BATCH_SK=12345,env=dev"))
+
+
+def clean_bq_error(msg):
+    """Strip the API URL / Job-ID noise from a BigQuery error, keeping the human part."""
+    if not msg:
+        return msg
+    core = msg
+    m = re.search(r'prettyPrint=false:\s*(.*)', core, re.DOTALL)
+    if m:
+        core = m.group(1)
+    # Drop trailing location / job metadata.
+    core = re.split(r'\s*(?:Location:|Job ID:)', core, maxsplit=1)[0]
+    core = core.strip().strip(':').strip()
+    return core or msg
+
+
+def generate_ai(prompt, max_output_tokens=2048):
+    """Single entry point for all Gemini calls — token-frugal by default.
+
+    Key savings on Gemini 2.5 Flash:
+      - thinking_budget=0  -> disables the model's internal "thinking" tokens
+                              (the largest hidden cost), restoring fast/cheap calls.
+      - low temperature    -> deterministic, no wasted re-sampling.
+      - capped output      -> bounded response size.
+    Falls back to a plain call if the installed SDK predates these config options.
+    """
+    if genai_types is not None:
+        try:
+            config = genai_types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=max_output_tokens,
+                thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+            )
+            return client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=config)
+        except Exception:
+            pass
+    return client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
 
 def load_rules_from_file(filepath):
     try:
@@ -34,40 +98,133 @@ def load_rules_from_file(filepath):
     except FileNotFoundError:
         return ""
 
+def _changed_new_lines(patch):
+    """Return the set of NEW-file line numbers that were added/modified in a unified diff."""
+    changed = set()
+    new_lineno = None
+    for line in patch.split('\n'):
+        if line.startswith('@@'):
+            m = re.search(r'\+(\d+)', line)        # @@ -a,b +c,d @@  -> new side starts at c
+            new_lineno = int(m.group(1)) if m else None
+            continue
+        if new_lineno is None or line.startswith('+++') or line.startswith('---') or line.startswith('\\'):
+            continue
+        if line.startswith('+'):                    # added/modified line on the new side
+            changed.add(new_lineno)
+            new_lineno += 1
+        elif line.startswith('-'):                  # removed line — does NOT advance new-file counter
+            continue
+        else:                                       # unchanged context line
+            new_lineno += 1
+    return changed
+
+
+def _hunk_newside(patch):
+    """Fallback: the raw new-side of each hunk (added + context), regions separated by blanks."""
+    regions, current = [], []
+    for line in patch.split('\n'):
+        if line.startswith('@@'):
+            if current:
+                regions.append('\n'.join(current)); current = []
+            continue
+        if line.startswith('+++') or line.startswith('---') or line.startswith('\\') or line.startswith('-'):
+            continue
+        current.append(line[1:] if (line.startswith('+') or line.startswith(' ')) else line)
+    if current:
+        regions.append('\n'.join(current))
+    return '\n\n'.join(r for r in regions if r.strip()).strip('\n')
+
+
+def _sql_statements_covering(full_content, changed_lines):
+    """Return the COMPLETE SQL statement(s) (`;`-delimited) that contain any changed line,
+    so a change anywhere in a statement yields the whole statement — never a truncated fragment."""
+    lines = full_content.split('\n')
+    # Map each line to a statement id (a statement ends on the line where its ';' appears).
+    line_stmt, stmt_id = [], 0
+    for ln in lines:
+        line_stmt.append(stmt_id)
+        if ';' in ln:
+            stmt_id += 1
+    changed_stmts = {line_stmt[cl - 1] for cl in changed_lines if 1 <= cl <= len(lines)}
+    if not changed_stmts:
+        return ""
+    kept = [lines[i] for i in range(len(lines)) if line_stmt[i] in changed_stmts]
+    return '\n'.join(kept).strip('\n')
+
+
+def extract_changed_content(patch, full_content="", filename=""):
+    """Content reviewed in 'Diff Only' mode: only what changed on the feature branch —
+    but never a half-statement. For SQL we expand each change to the FULL statement(s) it
+    touches (so the INSERT/SELECT header is always included); for other files we return the
+    changed hunks (added + context). Falls back to the full content when no patch is available."""
+    if not patch:
+        return full_content
+
+    changed_lines = _changed_new_lines(patch)
+
+    if filename.lower().endswith('.sql') and full_content and changed_lines:
+        snippet = _sql_statements_covering(full_content, changed_lines)
+        if snippet:
+            return snippet
+
+    return _hunk_newside(patch) or full_content
+
+
 def get_changed_files(repo, base_branch, head_branch, token):
     headers = {'Authorization': f'token {token}'} if token else {}
     compare_url = f"https://api.github.com/repos/{repo}/compare/{base_branch}...{head_branch}"
-    
+
     response = requests.get(compare_url, headers=headers)
     response.raise_for_status()
-    
+
     files_data = response.json().get('files', [])
     target_files = []
-    
+
     for file in files_data:
         if file['status'] in ['added', 'modified'] and (file['filename'].endswith(('.sql', '.ksh')) or file['filename'].endswith('.py')):
             raw_url = file['raw_url']
             raw_response = requests.get(raw_url, headers=headers)
+            patch = file.get('patch', '') or ''
             target_files.append({
                 "filename": file['filename'],
                 "content": raw_response.text,
                 # Blob SHA at HEAD — changes only when a new commit modifies the file.
                 # Used by the client to skip re-checking files with no new commits.
-                "sha": file.get('sha', '')
+                "sha": file.get('sha', ''),
+                # Unified diff vs the base branch, plus the changed-lines-only snippet
+                # (added + context) used by the "Diff Only" review mode.
+                "patch": patch,
+                "diff_content": extract_changed_content(patch, raw_response.text, file['filename']),
             })
-            
+
     return target_files
 
 def needs_ai_review(filename, content):
-    # AI is reserved for genuine OPTIMIZATION work, which is BigQuery-SQL specific.
-    # Parameterization/compliance for .py/.ksh is handled deterministically by the linter,
-    # so those file types skip the AI entirely (faster, fewer tokens).
-    if not filename.endswith('.sql'):
-        return False
+    """Decide whether a file has genuine ENHANCEMENT scope worth spending AI tokens on.
 
-    content_upper = content.upper()
-    complex_keywords = ['JOIN ', 'GROUP BY', 'OVER (', 'PARTITION BY', 'UNION']
-    return any(keyword in content_upper for keyword in complex_keywords)
+    The deterministic linter already handles syntax, parameterization, datatype and
+    compliance fixes for SQL/Python/KSH. The AI is invoked ONLY when a file is complex
+    enough that a human expert reviewer would still find optimization opportunities —
+    so simple files skip the AI entirely (fewer tokens).
+    """
+    fn = (filename or '').lower()
+    text = content or ''
+
+    if fn.endswith('.sql'):
+        up = text.upper()
+        # Set-based / multi-table / windowed / CTE SQL has real optimization scope.
+        signals = ['JOIN ', 'GROUP BY', 'OVER (', 'OVER(', 'PARTITION BY', 'UNION', 'WITH ', '(SELECT']
+        return any(s in up for s in signals)
+
+    if fn.endswith('.py'):
+        # Only sizeable Airflow DAGs (real task graphs) have structural optimization scope.
+        return content.count('Operator(') >= 3 or content.count('>>') >= 3
+
+    if fn.endswith('.ksh'):
+        # Only shell scripts with real control-flow / pipelines may be optimizable beyond linting.
+        return any(s in text for s in ['\nfor ', '\nwhile ', '\ncase ', ' | ', '&&'])
+
+    return False
 
 class DummyResponse:
     def __init__(self, text):
@@ -109,9 +266,14 @@ def get_user_identity():
     return "unknown-user@company.com"
 
 def resolve_dataset_for_metadata(dataset_name):
+    """Resolve a (possibly ${templated}) dataset name to its real BigQuery dataset,
+    using the configured SQL_DATASET_MAP. Fully generic — no hardcoded dataset names."""
     clean = dataset_name.replace('${', '').replace('}', '')
-    if clean.upper() in ['AEDW_DB', 'DB_AEDWD2']:
-        return 'DB_AEDWD2'
+    if clean in SQL_DATASET_MAP:
+        return SQL_DATASET_MAP[clean]
+    for var, real in SQL_DATASET_MAP.items():
+        if var.lower() == clean.lower():
+            return real
     return clean
 
 def extract_tables_and_metadata(sql_query):
@@ -143,15 +305,12 @@ def extract_tables_and_metadata(sql_query):
             ]
             processed_tables.add(table_key)
         except Exception:
-            schema_explorer_data[f"{dataset}.{table}"] = [
-                {"name": "order_id", "type": "INT64", "mode": "NULLABLE"},
-                {"name": "customer_id", "type": "INT64", "mode": "NULLABLE"},
-                {"name": "amount", "type": "FLOAT64", "mode": "NULLABLE"},
-                {"name": "order_date", "type": "DATETIME", "mode": "NULLABLE"},
-                {"name": "etl_batch_sk", "type": "INT64", "mode": "NULLABLE"}
-            ]
+            # Generic: NO hardcoded fallback schema. If the table can't be read live,
+            # record it with no columns so downstream steps simply skip schema-based fixes
+            # for it (rather than guessing fake columns).
+            schema_explorer_data[f"{dataset}.{table}"] = []
             processed_tables.add(table_key)
-            
+
     return schema_explorer_data
 
 def parse_python_tasks(py_content):
@@ -193,16 +352,20 @@ def inject_live_schema_context(sql_query):
             schema_context += f"Table: {dataset}.{table} structure columns:\n" + "\n".join(fields_desc) + "\n"
             processed_tables.add(table_key)
         except Exception:
-            pass 
-            
-    return schema_context if len(processed_tables) > 0 else ""
+            # Generic: no live schema available for this table → skip it (no fake columns).
+            processed_tables.add(table_key)
+
+    return schema_context if "  - " in schema_context else ""
 
 def perform_bq_dry_run(sql_query):
     try:
-        executable_query = sql_query.replace('${AEDW_DB}', 'DB_AEDWD2')
-        executable_query = executable_query.replace('${ETL_BATCH_SK}', '12345')
-        executable_query = executable_query.replace('${env}', 'dev')
-        
+        # Generic: substitute every configured ${TEMPLATE_VAR} so BigQuery can parse the query.
+        executable_query = sql_query
+        for var, real in SQL_DATASET_MAP.items():
+            executable_query = executable_query.replace('${' + var + '}', real)
+        for var, val in SQL_RUNTIME_VARS.items():
+            executable_query = executable_query.replace('${' + var + '}', val)
+
         job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
         query_job = bq_client.query(executable_query, job_config=job_config)
         return {
@@ -211,7 +374,7 @@ def perform_bq_dry_run(sql_query):
             "message": f"Syntax Valid. Will process {query_job.total_bytes_processed / (1024**2):.2f} MB."
         }
     except Exception as e:
-        return {"valid": False, "bytes_processed": 0, "message": f"BQ Syntax Error: {str(e)}"}
+        return {"valid": False, "bytes_processed": 0, "message": f"BigQuery validation error — {clean_bq_error(str(e))}"}
 
 def calculate_optimization_scores(filename, code, linter_count):
     ext = filename.split('.')[-1]
@@ -265,9 +428,25 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_sc
     code_lines = pre_cleaned_code.split('\n')
     numbered_code = '\n'.join([f"{i+1:03d} | {line}" for i, line in enumerate(code_lines)])
 
-    syntax_fix_directive = ""
-    if bq_error:
-        syntax_fix_directive = f"""
+    fn = (filename or '').lower()
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Generic, language-agnostic expert-reviewer framing (used for SQL, Python and KSH).
+    common_header = (
+        "You are an expert software code reviewer.\n"
+        "The code below has ALREADY been pre-processed by a deterministic linter that fixed every\n"
+        "mechanical issue it could (syntax, parameterization, naming/compliance, datatype/quoting).\n"
+        "Those are SOLVED — do NOT re-report them. Act like a senior reviewer and ONLY surface genuine\n"
+        "ENHANCEMENT opportunities (correctness risks, performance, scalability, maintainability).\n"
+        "Be concise to conserve tokens. NEVER invent table or column names — rely only on the code and\n"
+        "any schema/context provided. If there is genuinely nothing worth changing, output EXACTLY:\n"
+        "\"No advanced architectural bottlenecks detected.\"\n"
+    )
+
+    if fn.endswith('.sql'):
+        syntax_fix_directive = ""
+        if bq_error:
+            syntax_fix_directive = f"""
     ⚠️ HIGHEST PRIORITY — THE CODE CURRENTLY FAILS BIGQUERY VALIDATION:
     {bq_error}
     Your PRIMARY task is to FIX this error so the query is valid BigQuery Standard SQL, while preserving the original intent.
@@ -275,63 +454,69 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_sc
     In the "Advanced Optimizations" section, explain the root cause and your fix. Then output the corrected, valid query under "Final Refactored Code".
     Do NOT output "No advanced architectural bottlenecks detected." — there is a real error that must be fixed.
     """
-
-    base_instructions = f"""
-    You are a Senior Data Architect specializing in Google BigQuery.
-    All SQL syntax, recommendations, and optimizations MUST strictly adhere to BigQuery Standard SQL.
+        domain_rules = f"""
+    SQL DIALECT: Google BigQuery Standard SQL. All recommendations MUST be valid BigQuery SQL.
     {syntax_fix_directive}
     CRITICAL RULES:
-    1. Ensure `etl_batch_sk` is ALWAYS parameterized as `${{ETL_BATCH_SK}}` in all INSERT, UPDATE, SELECT, and DELETE statements you generate.
-    2. NEVER alter the functional output or business logic of the SQL. Do NOT add, remove, or modify window function partitions (`PARTITION BY`), aggregations, or filters. Optimizations MUST preserve the exact same data output as the original query.
-    3. CARTESIAN PRODUCT / MISSING JOIN CONDITION (correctness exception to Rule 2): If an `INNER JOIN`, a comma-join, or an implicit `JOIN` has NO `ON` (or `USING`) clause, treat it as a LIKELY BUG — an accidental Cartesian product — NOT as an intentional cross join. You MUST:
-       - Flag it prominently in the "Advanced Optimizations" section as a CRITICAL correctness risk (explain that the rows multiply because there is no join key).
-       - In the refactored code, DO NOT rewrite it to `CROSS JOIN`. Instead add an explicit join condition. If the LIVE SCHEMA shows an obvious shared key (e.g. both tables have `customer_id`), propose `ON a.customer_id = b.customer_id` and state in the notes that the key must be confirmed. If no shared key is evident, insert the literal placeholder `ON <JOIN_CONDITION_REQUIRED>` so the query cannot be committed until a human supplies the condition.
-       - Only leave a join as `CROSS JOIN` if the original code ALREADY says `CROSS JOIN` explicitly.
-    4. MISSING PARTITION BY (flag, do not silently rewrite): If a window function (`... OVER (...)`) has an `ORDER BY` but NO `PARTITION BY`, you MUST flag it in the "Advanced Optimizations" section as a potential correctness/performance risk — explain that the window then spans the ENTIRE table as one global frame (a full scan) instead of being scoped per group, which is frequently unintended. If the LIVE SCHEMA shows a natural grouping key (e.g. `customer_id`), recommend `PARTITION BY <key>` and state that it must be confirmed by a human. Never silently modify an EXISTING `PARTITION BY`.
+    1. Preserve any parameterized placeholders (e.g. `${{...}}`) the linter produced — keep them parameterized.
+    2. NEVER alter the functional output or business logic. Do NOT add, remove, or modify window partitions
+       (`PARTITION BY`), aggregations, or filters. Optimizations MUST preserve the exact same data output.
+    3. CARTESIAN PRODUCT / MISSING JOIN CONDITION (correctness exception to Rule 2): if an `INNER JOIN`,
+       comma-join, or implicit `JOIN` has NO `ON`/`USING` clause, treat it as a LIKELY BUG (accidental
+       Cartesian product), NOT an intentional cross join. Flag it prominently. In the refactored code do NOT
+       rewrite to `CROSS JOIN`; add an explicit join condition using a key that BOTH tables share according to
+       the LIVE SCHEMA below, and note it must be confirmed. If no shared key is evident, insert the literal
+       placeholder `ON <JOIN_CONDITION_REQUIRED>`. Only keep `CROSS JOIN` if the original already says so.
+    4. MISSING PARTITION BY (flag, do not silently rewrite): if a window `... OVER (...)` has `ORDER BY` but no
+       `PARTITION BY`, flag that the frame spans the ENTIRE table (full scan) instead of per group. If the LIVE
+       SCHEMA shows a natural grouping key, recommend `PARTITION BY <key>` and say it must be confirmed. Never
+       silently modify an EXISTING `PARTITION BY`.
 
-    LIVE PRODUCTION SCHEMA DATA CONTEXT (Use this to verify column names and references):
-    {live_schema}
+    LIVE PRODUCTION SCHEMA (use ONLY these real columns to verify references — do not invent any):
+    {live_schema or '(no live schema available — do not guess column names)'}
 
-    REPO CONTEXT (Cross-file dependencies modified in this PR):
+    REPO CONTEXT (other files in this PR):
     {repo_context}
 
-    The code below has ALREADY been pre-processed locally to fix basic syntax, parameterization, and timestamp functions.
-    DO NOT mention basic syntax fixes.
+    ONLY look for: correctness risks (esp. missing JOIN conditions), BigQuery bottlenecks (poor join strategy,
+    cross joins, inefficient window functions, scanning too much, not filtering early), and execution-plan/cost wins.
+    """
+        rules_file = 'rules_sql.txt'
+    elif fn.endswith('.py'):
+        domain_rules = """
+    LANGUAGE: Python (typically Apache Airflow DAGs / data-pipeline code).
+    Preserve behavior. ONLY look for: DAG structure & scheduling, idempotency, task dependency/parallelism,
+    error handling/retries, resource use, and readability/maintainability. Do not restate linter fixes.
+    """
+        rules_file = 'rules_py.txt'
+    elif fn.endswith('.ksh'):
+        domain_rules = """
+    LANGUAGE: Korn/Bash shell script. Preserve behavior. ONLY look for: robustness (error handling, quoting,
+    safe deletes), efficiency (avoiding needless subprocesses/pipes), portability, and maintainability.
+    Do not restate linter fixes.
+    """
+        rules_file = 'rules_ksh.txt'
+    else:
+        domain_rules = "\n    Review for correctness, performance and maintainability. Preserve behavior.\n"
+        rules_file = None
 
-    ONLY look for:
-    1. Correctness risks, especially JOINs missing an `ON`/`USING` condition (accidental Cartesian products) per Critical Rule 3.
-    2. Architectural bottlenecks specific to BigQuery (e.g., poor JOIN strategies, cross-joins, inefficient window functions, failing to filter early, or bad scaling patterns).
-    3. Suggest optimizations for BigQuery query execution plans, slot utilization, and performance.
+    specific_instructions = load_rules_from_file(os.path.join(base_dir, rules_file)) if rules_file else ""
 
-    If no correctness risks or severe bottlenecks exist, output EXACTLY: "No advanced architectural bottlenecks detected."
-
+    output_format = """
     Format your output strictly with these two headings:
-    
+
     ### 💡 Advanced Optimizations
     (Place ALL your explanations, reasoning, and context here.)
 
     ### 🛠️ Final Refactored Code
-    (Output ONLY the raw markdown code block here. Do NOT place any conversational text under this heading. Start immediately with ```)
+    (Output ONLY the raw code block here. Do NOT place any conversational text under this heading. Start immediately with ```)
     """
-    
-    specific_instructions = ""
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    if filename.endswith('.sql'):
-        specific_instructions = load_rules_from_file(os.path.join(base_dir, 'rules_sql.txt'))
-    elif filename.endswith('.py'):
-        specific_instructions = load_rules_from_file(os.path.join(base_dir, 'rules_py.txt'))
-    elif filename.endswith('.ksh'):
-        specific_instructions = load_rules_from_file(os.path.join(base_dir, 'rules_ksh.txt'))
 
-    prompt = f"{base_instructions}\n\n{specific_instructions}\n\nCode to review:\n```\n{numbered_code}\n```"
-    
-    # Execution using modern google-genai SDK
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=prompt
-    )
-    return response
+    prompt = (f"{common_header}\n{domain_rules}\n{specific_instructions}\n{output_format}\n"
+              f"Code to review:\n```\n{numbered_code}\n```")
+
+    # Token-frugal call (thinking disabled, low temperature, capped output).
+    return generate_ai(prompt)
 
 @app.route('/', methods=['GET'])
 def home():
@@ -396,7 +581,9 @@ def process_single_file():
     content = data.get('content')
     repo_context = data.get('repo_context', 'No additional context.')
     repo_name = data.get('repo_name', 'unknown')
-    
+    # 'full' = review the whole file; 'diff' = review only the changed lines (feature vs main).
+    scope = (data.get('scope') or 'full').lower()
+
     user_email = get_user_identity()
     
     if not filename or not content:
@@ -433,10 +620,31 @@ def process_single_file():
             structured_metadata = schema_meta  # reuse the schema already fetched for the linter
             py_analysis = parse_python_tasks(pre_cleaned_code) if filename.endswith('.py') else {}
 
+            # Deterministically detect a window function that has ORDER BY but no PARTITION BY,
+            # so the optimization section ALWAYS calls it out (regardless of what the AI returns).
+            window_advisory = ""
+            if filename.endswith('.sql'):
+                for over_inner in re.findall(r'OVER\s*\(([^)]*)\)', pre_cleaned_code, re.IGNORECASE):
+                    up = over_inner.upper()
+                    if 'ORDER BY' in up and 'PARTITION BY' not in up:
+                        window_advisory = ("⚠️ **Missing `PARTITION BY`:** a window function uses `OVER (... ORDER BY ...)` "
+                            "with **no `PARTITION BY`**, so the window spans the **entire table as a single frame** "
+                            "(a full scan) instead of being scoped per group. Add `PARTITION BY <key>` "
+                            "using the appropriate grouping column if per-group framing was intended.")
+                        break
+
             # Step 2a: validate the LINTER-FIXED code first (for SQL), so we can detect syntax errors
             # before deciding whether the AI is needed.
             sql_syntax_error_msg = ""
-            if filename.endswith('.sql'):
+            if filename.endswith('.sql') and scope == 'diff':
+                # Diff Only: we're reviewing a changed-lines fragment, which is usually not a
+                # complete, runnable statement — skip the dry-run instead of failing on a fragment.
+                bq_metrics = {
+                    "valid": None,
+                    "message": "Dry run skipped — reviewing only the lines changed on the feature branch (Diff Only mode)."
+                }
+                finops_status = "DIFF_SCOPE"
+            elif filename.endswith('.sql'):
                 has_placeholders = any(x in pre_cleaned_code for x in ["<MISSING_FILTER_REQUIRED>", "<JOIN_CONDITION_REQUIRED>", "(col1, col2, col3)", "TODO"])
 
                 if has_placeholders:
@@ -450,7 +658,8 @@ def process_single_file():
                     bq_bytes = bq_metrics.get("bytes_processed", 0)
 
                     if not bq_metrics.get("valid"):
-                        local_linter_issues.append(f"BigQuery Engine Error: {bq_metrics.get('message')}")
+                        # Already human-readable + cleaned (URL/Job-ID stripped) by perform_bq_dry_run.
+                        local_linter_issues.append(bq_metrics.get('message'))
                         finops_status = "SYNTAX_ERROR"
                         sql_syntax_error_msg = bq_metrics.get("message", "")
                     elif bq_bytes > FINOPS_MAX_BYTES_THRESHOLD:
@@ -459,8 +668,12 @@ def process_single_file():
                         bq_metrics["message"] = f"⚠️ FINOPS BLOCKED: Query structural plan consumes {bq_bytes / (1024**3):.2f} GB, exceeding environment maximum limit."
                         local_linter_issues.append("FinOps Exception: Execution plan exceeds maximum organizational compute thresholds.")
 
-            # Step 2b: escalate to the AI to OPTIMIZE complex SQL, or to FIX a detected syntax error.
-            if needs_ai_review(filename, pre_cleaned_code) or sql_syntax_error_msg:
+            # Step 2b: the deterministic linter + schema pass + BQ dry-run have already CAPTURED
+            # every issue that can be found mechanically (parameterization, datatype/quoting,
+            # placeholders, and any remaining syntax error reported by the dry-run). The AI is now
+            # reserved EXCLUSIVELY for genuine optimization of complex SQL — it is no longer spent
+            # trying to fix syntax errors, which saves a large number of tokens.
+            if needs_ai_review(filename, pre_cleaned_code):
                 ai_response_obj = review_code_with_gemini(filename, pre_cleaned_code, repo_context, live_schema, sql_syntax_error_msg)
                 raw_ai_markdown = ai_response_obj.text or ""
                 try:
@@ -489,7 +702,25 @@ def process_single_file():
                             local_linter_issues.append("AI Fix Available: A corrected, BigQuery-valid version is ready in the ✨ AI Optimized tab.")
             else:
                 is_bypassed = True
-                ai_review_markdown = "### 💡 Advanced Optimizations\n✓ No advanced optimization required. The deterministic linter applied all parameterization and compliance fixes; the AI optimizer was skipped to save time and tokens."
+                if sql_syntax_error_msg:
+                    # A real validation error was captured deterministically by the BigQuery dry-run.
+                    # It is shown as an issue in the linter panel; the AI was NOT spent on it.
+                    ai_review_markdown = ("### 💡 Advanced Optimizations\n"
+                        "⚠️ The BigQuery dry-run flagged a validation error (see the Deterministic Linter panel). "
+                        "Resolve it before committing — or ask the Architect in the chat below to rewrite it. "
+                        "The AI optimizer was not spent automatically, to conserve tokens.")
+                else:
+                    ai_review_markdown = ("### 💡 Advanced Optimizations\n"
+                        "✓ No advanced optimization required. The deterministic linter applied all parameterization, "
+                        "datatype, and compliance fixes; the AI optimizer was skipped to save time and tokens.")
+
+            # Guarantee the missing-PARTITION-BY call-out is in the optimization section.
+            if window_advisory:
+                heading = "### 💡 Advanced Optimizations"
+                if heading in ai_review_markdown:
+                    ai_review_markdown = ai_review_markdown.replace(heading, f"{heading}\n\n{window_advisory}\n", 1)
+                else:
+                    ai_review_markdown = f"{heading}\n\n{window_advisory}\n\n{ai_review_markdown}"
 
         time_taken = round(time.time() - start_time, 2)
         estimated_cost = (tokens_used / 1000000) * 0.15
@@ -534,18 +765,17 @@ def generate_mock_data():
     {code}
     """
     try:
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
+        response = generate_ai(prompt, max_output_tokens=1024)
         clean_text = response.text.replace('```json', '').replace('```', '').strip()
         parsed_data = json.loads(clean_text)
         return jsonify(parsed_data), 200
     except Exception as e:
+        # Generic, schema-agnostic placeholder preview when AI generation is unavailable
+        # (no hardcoded business/domain data).
         return jsonify([
-            {"customer_id": 101, "customer_name": "Alice Smith", "region": "NAMER", "created_at": "2026-06-03 14:00:00", "etl_batch_sk": 9999},
-            {"customer_id": 102, "customer_name": "Bob Johnson", "region": "EMEA", "created_at": "2026-06-03 14:15:00", "etl_batch_sk": 9999},
-            {"customer_id": 103, "customer_name": "Kaustubh", "region": "APAC", "created_at": "2026-06-03 14:30:00", "etl_batch_sk": 9999}
+            {"column_1": "sample_value", "column_2": 123, "column_3": "2026-01-01"},
+            {"column_1": "sample_value", "column_2": 456, "column_3": "2026-01-02"},
+            {"column_1": "sample_value", "column_2": 789, "column_3": "2026-01-03"}
         ]), 200
 
 @app.route('/get_audit_history', methods=['GET'])
@@ -646,17 +876,14 @@ def chat_with_code():
     """
 
     try:
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
+        response = generate_ai(prompt)
         tokens_used = 0
         try:
             if response.usage_metadata:
                 tokens_used = response.usage_metadata.total_token_count
         except AttributeError:
             pass
-            
+
         ai_reply = response.text
         if "### 🛠️ Final Refactored Code" in ai_reply:
             parts = ai_reply.split("### 🛠️ Final Refactored Code")

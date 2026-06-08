@@ -1,4 +1,27 @@
+import os
 import re
+
+
+def _parse_kv(raw):
+    out = {}
+    for pair in (raw or '').split(','):
+        pair = pair.strip()
+        if '=' in pair:
+            k, v = pair.split('=', 1)
+            k, v = k.strip(), v.strip()
+            if k:
+                out[k] = v
+    return out
+
+
+# --- Generic, deployment-configured conventions (NO hardcoded business names) ---
+# Real BigQuery dataset name -> ${TEMPLATE_VAR} it should be parameterized to.
+# Derived (reversed) from the same SQL_DATASET_MAP the backend uses. Empty disables.
+_DATASET_VARS = _parse_kv(os.environ.get("SQL_DATASET_MAP", "AEDW_DB=DB_AEDWD2"))
+DATASET_PARAM_MAP = {real: '${' + var + '}' for var, real in _DATASET_VARS.items() if real}
+# Audit / batch columns that must always be parameterized to ${UPPER(name)}. Empty disables.
+PARAM_COLUMNS = [c.strip() for c in os.environ.get("SQL_PARAM_COLUMNS", "etl_batch_sk").split(',') if c.strip()]
+
 
 def scan_for_secrets(content):
     """Shift-Left Security: Hardcoded Secrets Scanner."""
@@ -16,13 +39,41 @@ def scan_for_secrets(content):
             
     return logs
 
+_NUMERIC_TYPES = {'INT64', 'INTEGER', 'INT', 'SMALLINT', 'BIGINT', 'TINYINT', 'BYTEINT',
+                  'FLOAT64', 'FLOAT', 'NUMERIC', 'BIGNUMERIC', 'DECIMAL'}
+_DATE_TYPES = {'DATE', 'DATETIME', 'TIMESTAMP'}
+_KEYWORD_VALS = {'TRUE', 'FALSE', 'NULL', 'CURRENT_DATE', 'CURRENT_TIMESTAMP', 'CURRENT_DATETIME'}
+# Words that can appear left of an operator but are NOT column names.
+_RESERVED_IDENTS = {
+    'and', 'or', 'not', 'true', 'false', 'null', 'between', 'in', 'like', 'is', 'as',
+    'case', 'when', 'then', 'else', 'end', 'exists', 'on', 'using', 'where', 'select',
+    'from', 'group', 'order', 'by', 'having', 'limit', 'union', 'all', 'distinct',
+    'current_date', 'current_timestamp', 'current_datetime', 'extract', 'cast', 'date',
+    'datetime', 'timestamp', 'count', 'sum', 'avg', 'min', 'max',
+}
+
+_LIT_RE = r"'[^']*'|\"[^\"]*\"|-?\d+(?:\.\d+)?"   # quoted string OR number literal
+
+
+def _is_number(s):
+    return bool(re.fullmatch(r"-?\d+(?:\.\d+)?", s.strip()))
+
+
+def _is_quoted(v):
+    return len(v) >= 2 and v[0] in "'\"" and v[-1] == v[0]
+
+
 def apply_schema_fixes(content, schema, logs):
     """Deterministic, schema-driven fixes — no AI/tokens needed.
 
     schema: { 'dataset.table': [ {'name':..., 'type':..., 'mode':...}, ... ] }
-    Fixes:
-      - spaced column identifiers (e.g. `customer name` -> `customer_name`)
-      - unquoted string literals compared to a STRING column (e.g. `= kaustubh` -> `= 'kaustubh'`)
+
+    Using the LIVE column datatypes, this normalises comparison literals so the
+    query passes BigQuery validation WITHOUT spending any AI tokens:
+      - spaced column identifiers      (`customer name`  -> `customer_name`)
+      - STRING column vs bare literal  (`name = kaustubh`-> `name = 'kaustubh'`)
+      - NUMERIC column vs quoted number(`amount = '100'` -> `amount = 100`)
+      - DATE/TIME column vs bare date  (`dt = 2024-01-01`-> `dt = '2024-01-01'`)
     """
     if not schema:
         return content
@@ -49,45 +100,156 @@ def apply_schema_fixes(content, schema, logs):
                 logs.append(f"Fix: Corrected column name spacing to '{col}' using live schema.")
                 fixed_names.add(col.lower())
 
-    # C. Quote an unquoted RHS value compared to a STRING column.
-    def _quote(m):
+    # C. Datatype-aware literal normalisation for `col <op> <value>` comparisons.
+    seen_fix = set()
+
+    def _log_once(msg):
+        if msg not in seen_fix:
+            logs.append(msg)
+            seen_fix.add(msg)
+
+    def _fix(m):
         col, op, val = m.group('col'), m.group('op'), m.group('val')
-        if (col.lower() in col_types and col_types[col.lower()] == 'STRING'
-                and val.lower() not in all_cols
-                and val.upper() not in ('TRUE', 'FALSE', 'NULL')):
-            logs.append(f"Fix: Quoted string literal for STRING column '{col}' using live schema.")
-            return f"{col} {op} '{val}'"
+        ctype = col_types.get(col.lower())
+        if not ctype:
+            return m.group(0)
+
+        quoted = len(val) >= 2 and val[0] in "'\"" and val[-1] == val[0]
+        inner = val[1:-1] if quoted else val
+
+        # STRING column: ensure the literal is quoted (skip columns, keywords, numbers).
+        if ctype == 'STRING':
+            if (not quoted and val.lower() not in all_cols
+                    and val.upper() not in _KEYWORD_VALS and not _is_number(val)):
+                _log_once(f"Fix: Quoted string literal for STRING column '{col}' using live schema datatype.")
+                return f"{col} {op} '{val}'"
+
+        # NUMERIC column: drop quotes around a numeric literal.
+        elif ctype in _NUMERIC_TYPES:
+            if quoted and _is_number(inner):
+                _log_once(f"Fix: Removed quotes around numeric literal for {ctype} column '{col}' using live schema datatype.")
+                return f"{col} {op} {inner}"
+
+        # DATE/DATETIME/TIMESTAMP column: quote a bare date literal so it isn't read as arithmetic.
+        elif ctype in _DATE_TYPES:
+            if not quoted and re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T][\d:.+-]+)?", val):
+                _log_once(f"Fix: Quoted date literal for {ctype} column '{col}' using live schema datatype.")
+                return f"{col} {op} '{val}'"
+
         return m.group(0)
-    content = re.sub(
-        r"\b(?P<col>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<op>=)\s*(?P<val>[A-Za-z_][A-Za-z0-9_]*)\b",
-        _quote, content
+
+    # B2. Collapse an accidental space inside a column identifier when it sits directly
+    #     before a comparison operator (e.g. `customer name = ...` -> `customer_name = ...`).
+    #     Schema-INDEPENDENT: handles the typo even when the column isn't in the live schema,
+    #     so the value-quoting / unknown-column passes below can then act on a single identifier.
+    #     String literals are masked first so text like `'foo bar = baz'` is never touched.
+    def _collapse_spaced(m):
+        w1, w2 = m.group(1), m.group(2)
+        if w1.lower() in _RESERVED_IDENTS or w2.lower() in _RESERVED_IDENTS:
+            return m.group(0)
+        _log_once(f"Fix: Collapsed an accidental space inside the column identifier '{w1} {w2}' -> '{w1}_{w2}'.")
+        return f"{w1}_{w2}{m.group(3)}"
+
+    _masked = []
+    def _mask(m):
+        _masked.append(m.group(0))
+        return f"\x00{len(_masked) - 1}\x00"
+    tmp = re.sub(r"'[^']*'|\"[^\"]*\"", _mask, content)
+    tmp = re.sub(r"\b([A-Za-z]+)\s+([A-Za-z]+)(\s*(?:=|!=|<>|>=|<=|>|<))", _collapse_spaced, tmp)
+    content = re.sub(r"\x00(\d+)\x00", lambda m: _masked[int(m.group(1))], tmp)
+
+    comparison_re = re.compile(
+        r"\b(?P<col>[A-Za-z_][A-Za-z0-9_]*)\s*"
+        r"(?P<op>=|!=|<>|>=|<=|>|<)\s*"
+        r"(?P<val>'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.\-]+)"
     )
+    content = comparison_re.sub(_fix, content)
+
+    # D. Datatype normalisation inside `col BETWEEN <v1> AND <v2>` ranges.
+    def _fix_between(m):
+        col, v1, v2 = m.group('col'), m.group('v1'), m.group('v2')
+        ctype = col_types.get(col.lower())
+        if not ctype:
+            return m.group(0)
+        if ctype in _NUMERIC_TYPES:
+            i1 = v1[1:-1] if _is_quoted(v1) else v1
+            i2 = v2[1:-1] if _is_quoted(v2) else v2
+            if (_is_quoted(v1) or _is_quoted(v2)) and _is_number(i1) and _is_number(i2):
+                _log_once(f"Fix: Removed quotes around BETWEEN bounds for {ctype} column '{col}' using live schema datatype.")
+                return f"{col} BETWEEN {i1} AND {i2}"
+        elif ctype in _DATE_TYPES:
+            dpat = r"\d{4}-\d{2}-\d{2}(?:[ T][\d:.+-]+)?"
+            if (not _is_quoted(v1) and re.fullmatch(dpat, v1)) or (not _is_quoted(v2) and re.fullmatch(dpat, v2)):
+                q1 = v1 if _is_quoted(v1) else f"'{v1}'"
+                q2 = v2 if _is_quoted(v2) else f"'{v2}'"
+                _log_once(f"Fix: Quoted BETWEEN date bounds for {ctype} column '{col}' using live schema datatype.")
+                return f"{col} BETWEEN {q1} AND {q2}"
+        return m.group(0)
+
+    between_re = re.compile(
+        r"\b(?P<col>[A-Za-z_][A-Za-z0-9_]*)\s+BETWEEN\s+"
+        r"(?P<v1>'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.\-]+)\s+AND\s+"
+        r"(?P<v2>'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.\-]+)",
+        re.IGNORECASE,
+    )
+    content = between_re.sub(_fix_between, content)
+
+    # E. Unknown-column guard (WHERE clause only): a column compared to a literal that
+    #    is NOT in the live schema is almost certainly a typo / removed column. Neutralise
+    #    the predicate with TRUE (keeps the query valid) and flag it for a human — so the
+    #    BigQuery dry-run does not have to fail on an "Unrecognized name" error.
+    #    CRITICAL: only run this when we actually fetched real columns. With no live schema
+    #    (all_cols empty) we must NOT guess — otherwise every predicate would be neutralised.
+    if not all_cols:
+        return content
+
+    def _neutralize_unknown(where_body):
+        def repl(m):
+            col, val = m.group('col'), m.group('val')
+            cl = col.lower()
+            if cl in all_cols or cl in _RESERVED_IDENTS:
+                return m.group(0)
+            _log_once(f"Warning: Column '{col}' is not in the live schema for this table — its filter was neutralized (TRUE). Verify the column name.")
+            return f"TRUE /* '{col}' not in live schema - verify column name */"
+        pred_re = re.compile(
+            r"\b(?P<col>[A-Za-z_][A-Za-z0-9_]*)\s*(?:=|!=|<>|>=|<=|>|<)\s*(?P<val>" + _LIT_RE + r")"
+        )
+        return pred_re.sub(repl, where_body)
+
+    where_re = re.compile(
+        r"(?is)(\bWHERE\b)(?P<body>.*?)(?=\bGROUP\s+BY\b|\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|\bWINDOW\b|\bUNION\b|;|$)"
+    )
+    content = where_re.sub(lambda m: m.group(1) + _neutralize_unknown(m.group('body')), content)
 
     return content
 
 def pre_process_sql(filename, content, schema=None):
     logs = []
 
-    # 1. Parameterize Hardcoded BigQuery Datasets
-    dataset_pattern = re.compile(r'\bDB_AEDWD2\b', re.IGNORECASE)
-    if dataset_pattern.search(content):
-        content = dataset_pattern.sub('${AEDW_DB}', content)
-        logs.append("Fix: Automatically parameterized hardcoded dataset 'DB_AEDWD2' to '${AEDW_DB}'.")
-        
+    # 1. Parameterize hardcoded BigQuery datasets (config-driven, generic — no hardcoded names).
+    for real_ds, template in DATASET_PARAM_MAP.items():
+        pat = re.compile(r'\b' + re.escape(real_ds) + r'\b', re.IGNORECASE)
+        if pat.search(content):
+            content = pat.sub(template, content)
+            logs.append(f"Fix: Parameterized hardcoded dataset '{real_ds}' to '{template}'.")
+
     # 2. Convert TIMESTAMP functions to DATETIME functions
     timestamp_pattern = re.compile(r'\bTIMESTAMP\b\s*\(', re.IGNORECASE)
     if timestamp_pattern.search(content):
         content = timestamp_pattern.sub('DATETIME(', content)
         logs.append("Fix: Replaced 'TIMESTAMP()' with 'DATETIME()'.")
 
-    # 3. Universal ETL_BATCH_SK Parameterization
-    # Matches UPDATE/DELETE assignments: etl_batch_sk = 12345
-    content, n1 = re.subn(r'(\betl_batch_sk\b\s*=\s*)[^\s,;)]+', r'\1${ETL_BATCH_SK}', content, flags=re.IGNORECASE)
-    # Matches SELECT aliases: 12345 AS etl_batch_sk
-    content, n2 = re.subn(r'\b\d+\s+AS\s+etl_batch_sk\b', '${ETL_BATCH_SK} AS etl_batch_sk', content, flags=re.IGNORECASE)
-    
-    if (n1 + n2) > 0:
-        logs.append("Fix: Parameterized hardcoded 'ETL_BATCH_SK' occurrences to '${ETL_BATCH_SK}'.")
+    # 3. Parameterize configured audit/batch columns (config-driven, generic).
+    for col in PARAM_COLUMNS:
+        param = '${' + col.upper() + '}'
+        # Assignment form:  <col> = <value>   ->   <col> = ${COL}
+        assign_re = re.compile(r'(\b' + re.escape(col) + r'\b\s*=\s*)[^\s,;)]+', re.IGNORECASE)
+        content, n1 = assign_re.subn(lambda m: m.group(1) + param, content)
+        # SELECT-alias form:  <number> AS <col>   ->   ${COL} AS <col>
+        alias_re = re.compile(r'\b\d+\s+AS\s+' + re.escape(col) + r'\b', re.IGNORECASE)
+        content, n2 = alias_re.subn(param + ' AS ' + col, content)
+        if (n1 + n2) > 0:
+            logs.append(f"Fix: Parameterized hardcoded '{col}' occurrences to '{param}'.")
         
     # 4. Merge Multiple INSERTs for VALUES
     merge_pattern = re.compile(r"(INSERT\s+INTO\s+([A-Za-z0-9_$.{}]+)(?:\s*\([^)]+\))?\s+VALUES\s*[\s\S]*?);\s*INSERT\s+INTO\s+\2(?:\s*\([^)]+\))?\s+VALUES", re.IGNORECASE)

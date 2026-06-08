@@ -149,6 +149,100 @@
         </div>
     </div>
 
+    <!-- ===== Run Summary (metrics) modal — auto-opens when a run completes ===== -->
+    <div id="metricsModal" style="display: none;" onclick="if(event.target===this) closeMetricsModal()" class="fixed inset-0 bg-slate-900/55 backdrop-blur-sm items-center justify-center z-[99998] p-6 transition-all duration-300">
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-3xl rounded-2xl shadow-2xl max-h-[92vh] overflow-y-auto">
+            <!-- header -->
+            <div class="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800">
+                <div class="flex items-center gap-3">
+                    <div class="w-9 h-9 rounded-xl bg-brand-50 dark:bg-brand-900/30 grid place-items-center text-brand-600 dark:text-brand-400">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-slate-900 dark:text-white leading-tight">Run Summary</h3>
+                        <p class="text-xs text-slate-500 flex items-center gap-1.5">
+                            <span class="relative flex h-2 w-2"><span class="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60 animate-ping"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span>
+                            Analysis complete · <span id="mmWhen">just now</span></p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span id="mmCached" style="display:none;" class="text-[0.65rem] font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 rounded-full px-2 py-1">↺ 0 cached</span>
+                    <button onclick="closeMetricsModal()" class="w-8 h-8 grid place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-600 dark:hover:text-slate-200 text-xl cursor-pointer">&times;</button>
+                </div>
+            </div>
+            <!-- body -->
+            <div class="p-6">
+                <div class="grid md:grid-cols-[auto_1fr] gap-6 items-center pb-5 border-b border-slate-100 dark:border-slate-800">
+                    <div class="flex items-center gap-4">
+                        <div class="relative w-[112px] h-[112px]">
+                            <svg viewBox="0 0 120 120" class="w-[112px] h-[112px] -rotate-90">
+                                <circle cx="60" cy="60" r="52" fill="none" stroke="#e2e8f0" class="dark:stroke-slate-700" stroke-width="13"/>
+                                <circle id="mmDonutDet" cx="60" cy="60" r="52" fill="none" stroke="#10b981" stroke-width="13" stroke-linecap="round" stroke-dasharray="0 327"/>
+                                <circle id="mmDonutAi" cx="60" cy="60" r="52" fill="none" stroke="#8b5cf6" stroke-width="13" stroke-linecap="round" stroke-dasharray="0 327" stroke-dashoffset="0"/>
+                            </svg>
+                            <div class="absolute inset-0 grid place-items-center text-center">
+                                <div><p id="mmCenterPct" class="text-xl font-extrabold text-slate-900 dark:text-white leading-none">0%</p><p class="text-[0.55rem] text-slate-400 mt-0.5 font-semibold">no-token</p></div>
+                            </div>
+                        </div>
+                        <div class="space-y-1.5 text-xs">
+                            <div class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-sm bg-emerald-500"></span><span class="text-slate-600 dark:text-slate-300">Deterministic</span><span id="mmDetPct" class="ml-auto font-bold text-slate-900 dark:text-white">0%</span></div>
+                            <div class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-sm bg-violet-500"></span><span class="text-slate-600 dark:text-slate-300">AI optimize</span><span id="mmAiPct" class="ml-auto font-bold text-slate-900 dark:text-white">0%</span></div>
+                            <p class="text-[0.65rem] text-slate-400 pt-0.5">work split this run</p>
+                        </div>
+                    </div>
+                    <div>
+                        <p class="text-[1.6rem] leading-tight font-extrabold text-slate-900 dark:text-white"><span id="mmFiles">0</span> files <span class="text-slate-400 font-bold text-xl">reviewed</span></p>
+                        <div class="mt-3 flex h-2.5 rounded-full overflow-hidden bg-slate-100 dark:bg-slate-800">
+                            <div id="mmSegIssues" class="bg-red-500" style="width:0%"></div>
+                            <div id="mmSegOptimize" class="bg-amber-400" style="width:0%"></div>
+                            <div id="mmSegAutofix" class="bg-blue-400" style="width:0%"></div>
+                            <div id="mmSegClean" class="bg-emerald-500" style="width:0%"></div>
+                        </div>
+                        <div class="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                            <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-red-500"></span><span class="text-slate-500">Issues</span><b id="mmCIssues" class="text-slate-900 dark:text-white">0</b></span>
+                            <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-amber-400"></span><span class="text-slate-500">Optimize</span><b id="mmCOptimize" class="text-slate-900 dark:text-white">0</b></span>
+                            <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-blue-400"></span><span class="text-slate-500">Auto-Fixed</span><b id="mmCAutofix" class="text-slate-900 dark:text-white">0</b></span>
+                            <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-emerald-500"></span><span class="text-slate-500">Clean</span><b id="mmCClean" class="text-slate-900 dark:text-white">0</b></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-5 gap-3 pt-5">
+                    <div class="bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-xl p-4">
+                        <div class="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-900/30 grid place-items-center mb-2"><svg class="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div>
+                        <p class="text-[0.62rem] uppercase tracking-wide text-slate-400 font-bold">Execution</p>
+                        <p id="mmTime" class="text-xl font-extrabold text-slate-900 dark:text-white">0.0s</p>
+                    </div>
+                    <div class="bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-xl p-4">
+                        <div class="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 grid place-items-center mb-2"><svg class="w-4 h-4 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg></div>
+                        <p class="text-[0.62rem] uppercase tracking-wide text-slate-400 font-bold">Tokens</p>
+                        <p id="mmTokens" class="text-xl font-extrabold text-slate-900 dark:text-white">0</p>
+                    </div>
+                    <div class="bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-xl p-4">
+                        <div class="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 grid place-items-center mb-2"><svg class="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 9v1"></path></svg></div>
+                        <p class="text-[0.62rem] uppercase tracking-wide text-slate-400 font-bold">FinOps Cost</p>
+                        <p id="mmCost" class="text-xl font-extrabold text-emerald-600 dark:text-emerald-400">$0.00</p>
+                    </div>
+                    <div class="bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-xl p-4">
+                        <div class="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-900/30 grid place-items-center mb-2"><svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2 4 3 8 3s8-1 8-3V7M4 7c0 2 4 3 8 3s8-1 8-3M4 7c0-2 4-3 8-3s8 1 8 3"></path></svg></div>
+                        <p class="text-[0.62rem] uppercase tracking-wide text-slate-400 font-bold">Data Scanned</p>
+                        <p id="mmData" class="text-xl font-extrabold text-slate-400 dark:text-slate-500">0.00 GB</p>
+                        <div class="mt-1.5 h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div id="mmDataGauge" class="h-full rounded-full bg-blue-400" style="width:0%"></div></div>
+                    </div>
+                    <div class="bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-xl p-4">
+                        <div class="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-700 grid place-items-center mb-2"><svg class="w-4 h-4 text-slate-500 dark:text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg></div>
+                        <p class="text-[0.62rem] uppercase tracking-wide text-slate-400 font-bold">Files</p>
+                        <p id="mmFileCount" class="text-xl font-extrabold text-slate-900 dark:text-white">0</p>
+                    </div>
+                </div>
+            </div>
+            <!-- footer -->
+            <div class="flex items-center justify-end gap-2 px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 rounded-b-2xl">
+                <button onclick="exportMarkdownReport()" class="text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white px-4 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer">Export report</button>
+                <button onclick="closeMetricsModal()" class="text-sm font-semibold text-white bg-brand-600 hover:bg-brand-700 px-4 py-2 rounded-lg shadow-sm cursor-pointer">Done</button>
+            </div>
+        </div>
+    </div>
+
     <header class="bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 shadow-sm sticky top-0 z-50 transition-colors">
         <nav class="container mx-auto px-6 py-4 flex items-center justify-between relative z-10">
             <div class="flex items-center gap-3">
@@ -158,6 +252,10 @@
                 <h1 class="text-xl font-extrabold tracking-tight text-slate-900 dark:text-white">AI Code <span class="font-normal text-slate-500 dark:text-slate-400">Reviewer</span></h1>
             </div>
             <div class="flex items-center gap-4">
+                <button id="runSummaryBtn" onclick="openMetricsModal()" style="display:none;" title="View the latest run summary" class="items-center gap-2 bg-brand-50 dark:bg-slate-800 text-brand-700 dark:text-brand-400 px-3.5 py-1.5 rounded-lg border border-brand-200 dark:border-slate-700 text-xs font-semibold hover:bg-brand-100 dark:hover:bg-slate-700 transition-colors cursor-pointer">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                    Run Summary
+                </button>
                 <button onclick="toggleAuditDrawer(true)" class="flex items-center gap-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 px-3.5 py-1.5 rounded-lg border border-emerald-200 dark:border-emerald-900/30 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-950 transition-colors cursor-pointer">
                     🔍 View Audit Trail
                 </button>
@@ -174,7 +272,7 @@
 
     <main class="container mx-auto px-6 py-10 max-w-7xl flex-grow relative z-10">
         
-        <div class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-8 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 mb-8 transition-colors">
+        <div class="relative z-30 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-8 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 mb-8 transition-colors">
             <div class="flex items-center justify-between mb-8">
                 <div class="flex items-center gap-3">
                     <div class="p-2 bg-brand-50 dark:bg-slate-800 text-brand-600 dark:text-brand-400 rounded-md">
@@ -182,10 +280,21 @@
                     </div>
                     <h2 class="text-lg font-bold text-slate-800 dark:text-white">Target Configuration</h2>
                 </div>
-                <button id="reviewBtn" onclick="runReview()" class="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white font-medium py-2.5 px-6 rounded-lg shadow-md shadow-brand-500/20 transition-all duration-200 transform hover:-translate-y-0.5 outline-none cursor-pointer">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                    Start Analysis
-                </button>
+                <div class="flex items-center gap-4">
+                    <!-- Run-mode toggle: incremental (changed files) · full re-scan · diff-only (changed lines). -->
+                    <div class="flex flex-col items-end">
+                        <div class="flex items-center bg-slate-100 dark:bg-slate-800 rounded-lg p-1 text-xs font-bold border border-slate-200 dark:border-slate-700">
+                            <button id="mode-incremental" onclick="setRunMode('incremental')" title="Skip files with no new commit since the last run (uses cache to save time + tokens)" class="px-3 py-1.5 rounded-md transition-colors cursor-pointer bg-white dark:bg-slate-700 shadow-sm text-slate-800 dark:text-white">Changed Only</button>
+                            <button id="mode-full" onclick="setRunMode('full')" title="Re-scan every file from scratch, ignoring the cache" class="px-3 py-1.5 rounded-md transition-colors cursor-pointer text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white">Full Run</button>
+                            <button id="mode-diff" onclick="setRunMode('diff')" title="Review ONLY the lines changed on the feature branch vs main (smallest, cheapest scan)" class="px-3 py-1.5 rounded-md transition-colors cursor-pointer text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white">Diff Only</button>
+                        </div>
+                        <p id="modeHint" class="text-[0.6rem] text-slate-400 dark:text-slate-500 mt-1 font-medium pr-1">Skips unchanged files to save time &amp; tokens</p>
+                    </div>
+                    <button id="reviewBtn" onclick="runReview()" class="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white font-medium py-2.5 px-6 rounded-lg shadow-md shadow-brand-500/20 transition-all duration-200 transform hover:-translate-y-0.5 outline-none cursor-pointer">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        Start Analysis
+                    </button>
+                </div>
             </div>
             
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -258,63 +367,54 @@
             </div>
         </div>
 
-        <div id="metricsBar" style="display: none;" class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm mb-8 overflow-hidden">
-            <div class="grid grid-cols-2 md:grid-cols-5 divide-x divide-y md:divide-y-0 divide-slate-200 dark:divide-slate-800">
-                <div class="p-5 flex flex-col items-center justify-center text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                    <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> Execution Time</p>
-                    <p id="timeTaken" class="text-xl font-bold text-slate-800 dark:text-white">0.0s</p>
-                </div>
-                <div class="p-5 flex flex-col items-center justify-center text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                    <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg> Tokens Used</p>
-                    <p id="tokenCount" class="text-xl font-bold text-slate-800 dark:text-white">0</p>
-                </div>
-                <div class="p-5 flex flex-col items-center justify-center text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                    <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg> FinOps Cost</p>
-                    <p id="finopsCost" class="text-xl font-bold text-emerald-600 dark:text-emerald-400">$0.00</p>
-                </div>
-                <div class="p-5 flex flex-col items-center justify-center text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors relative group">
-                    <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg> Data Scanned</p>
-                    <p id="dataScanned" class="text-xl font-bold text-blue-600 dark:text-blue-400">0.00 GB</p>
-                    <div class="w-full max-w-[100px] bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full mt-1.5 overflow-hidden">
-                        <div id="finopsGauge" class="bg-blue-500 h-full transition-all duration-500" style="width: 0%"></div>
-                    </div>
-                    <p class="text-[0.6rem] text-slate-400 mt-1.5 font-medium">Validated dry-run bytes only</p>
-                    <div class="hidden group-hover:block absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-slate-800 text-white text-[0.65rem] font-normal p-2.5 rounded-lg shadow-xl w-52 z-50 leading-relaxed">
-                        Reflects bytes from successful BigQuery dry runs. Files with structural placeholders (e.g. a missing WHERE) skip the dry run and contribute 0 GB.
-                    </div>
-                </div>
-                <div class="p-5 flex flex-col items-center justify-center text-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                    <p class="text-[0.65rem] text-slate-500 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg> Files Scanned</p>
-                    <p id="fileCount" class="text-xl font-bold text-slate-800 dark:text-white">0</p>
-                </div>
-            </div>
-        </div>
 
         <div id="results-layout" style="display: none;" class="flex-col md:flex-row gap-6 items-start">
             
             <div class="w-full md:w-1/3 lg:w-1/4 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-4 sticky top-24 shrink-0">
                 <div class="flex items-center justify-between mb-4 px-2">
                     <h3 class="text-xs font-bold text-slate-500 uppercase tracking-widest">Files Analyzed</h3>
-                    <button onclick="openBatchPushModal()" class="text-[0.6rem] font-bold bg-brand-50 text-brand-600 dark:bg-brand-900/30 dark:text-brand-400 px-2 py-1 rounded hover:bg-brand-100 dark:hover:bg-brand-900/50 transition-colors cursor-pointer">
+                    <button onclick="openBatchPushModal()" class="flex items-center gap-1.5 text-[0.65rem] font-bold bg-brand-600 hover:bg-brand-700 text-white px-2.5 py-1.5 rounded-lg shadow-sm transition-colors cursor-pointer">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path></svg>
                         Batch Push
                     </button>
                 </div>
-                
-                <div class="flex gap-1 mb-3 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg overflow-x-auto text-[0.6rem] font-bold uppercase tracking-wider shrink-0">
-                    <button onclick="filterSidebar('all')" id="filter-all" class="flex-1 py-1.5 px-1 rounded-md bg-white dark:bg-slate-700 shadow-sm ring-1 ring-slate-300 dark:ring-slate-600 transition-colors text-slate-800 dark:text-white cursor-pointer">All <span id="count-all" class="ml-0.5 opacity-60">0</span></button>
-                    <button onclick="filterSidebar('issues')" id="filter-issues" class="flex-1 py-1.5 px-1 rounded-md text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors cursor-pointer">Issues <span id="count-issues" class="ml-0.5 opacity-60">0</span></button>
-                    <button onclick="filterSidebar('autofix')" id="filter-autofix" class="flex-1 py-1.5 px-1 rounded-md text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors cursor-pointer">Fixed <span id="count-autofix" class="ml-0.5 opacity-60">0</span></button>
-                    <button onclick="filterSidebar('clean')" id="filter-clean" class="flex-1 py-1.5 px-1 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 transition-colors cursor-pointer">Clean <span id="count-clean" class="ml-0.5 opacity-60">0</span></button>
-                </div>
 
-                <div class="flex flex-wrap items-center gap-x-3 gap-y-1 mb-4 px-2 text-[0.6rem] font-semibold text-slate-400 dark:text-slate-500">
-                    <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>Issues / Critical</span>
-                    <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Optimize</span>
-                    <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-blue-500"></span>Auto-Fixed</span>
-                    <span class="flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Clean</span>
+                <!-- Filter legend: one horizontal row of icon chips. Hover shows the tab name. -->
+                <div class="flex items-center justify-between gap-1 mb-4 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl shrink-0">
+                    <button onclick="filterSidebar('all')" id="filter-all" title="All files"
+                        class="group relative flex-1 flex items-center justify-center gap-1 py-2 px-1 rounded-lg bg-white dark:bg-slate-700 ring-1 ring-slate-300 dark:ring-slate-600 shadow-sm transition-all cursor-pointer">
+                        <svg class="w-3.5 h-3.5 text-slate-500 dark:text-slate-300 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                        <span id="count-all" class="text-xs font-black text-slate-700 dark:text-white leading-none">0</span>
+                        <span class="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-800 text-white text-[0.6rem] font-semibold px-2 py-1 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">All files</span>
+                    </button>
+                    <button onclick="filterSidebar('issues')" id="filter-issues" title="Issues — needs attention"
+                        class="group relative flex-1 flex items-center justify-center gap-1 py-2 px-1 rounded-lg ring-1 ring-transparent hover:bg-red-50 dark:hover:bg-red-900/20 transition-all cursor-pointer">
+                        <svg class="w-3.5 h-3.5 text-red-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                        <span id="count-issues" class="text-xs font-black text-red-600 dark:text-red-400 leading-none">0</span>
+                        <span class="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-800 text-white text-[0.6rem] font-semibold px-2 py-1 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">Issues</span>
+                    </button>
+                    <button onclick="filterSidebar('optimize')" id="filter-optimize" title="Optimize — AI suggestion available"
+                        class="group relative flex-1 flex items-center justify-center gap-1 py-2 px-1 rounded-lg ring-1 ring-transparent hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-all cursor-pointer">
+                        <svg class="w-3.5 h-3.5 text-amber-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                        <span id="count-optimize" class="text-xs font-black text-amber-600 dark:text-amber-400 leading-none">0</span>
+                        <span class="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-800 text-white text-[0.6rem] font-semibold px-2 py-1 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">Optimize</span>
+                    </button>
+                    <button onclick="filterSidebar('autofix')" id="filter-autofix" title="Auto-Fixed by the linter"
+                        class="group relative flex-1 flex items-center justify-center gap-1 py-2 px-1 rounded-lg ring-1 ring-transparent hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all cursor-pointer">
+                        <svg class="w-3.5 h-3.5 text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"></path></svg>
+                        <span id="count-autofix" class="text-xs font-black text-blue-600 dark:text-blue-400 leading-none">0</span>
+                        <span class="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-800 text-white text-[0.6rem] font-semibold px-2 py-1 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">Auto-Fixed</span>
+                    </button>
+                    <button onclick="filterSidebar('clean')" id="filter-clean" title="Clean — no findings"
+                        class="group relative flex-1 flex items-center justify-center gap-1 py-2 px-1 rounded-lg ring-1 ring-transparent hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-all cursor-pointer">
+                        <svg class="w-3.5 h-3.5 text-emerald-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        <span id="count-clean" class="text-xs font-black text-emerald-600 dark:text-emerald-400 leading-none">0</span>
+                        <span class="pointer-events-none absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-800 text-white text-[0.6rem] font-semibold px-2 py-1 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">Clean</span>
+                    </button>
                 </div>
 
                 <ul id="sidebar-list" class="space-y-2 max-h-[calc(100vh-280px)] overflow-y-auto pr-1 pb-4"></ul>
+                <p id="sidebar-empty" style="display:none;" class="text-center text-xs text-slate-400 dark:text-slate-500 italic py-8">No files in this category.</p>
                 
                 <div class="pt-4 border-t border-slate-200 dark:border-slate-800 mt-2">
                     <button onclick="exportMarkdownReport()" class="w-full py-2 text-xs font-bold text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-2">
@@ -368,6 +468,44 @@
 
         function escapeHtml(unsafe) {
             return (unsafe || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        }
+
+        // Render a unified-diff patch (vs the base branch) with colour-coded lines.
+        function renderPatchHtml(patch) {
+            if (!patch || !patch.trim()) {
+                return `<div class="p-6 text-sm text-slate-400 dark:text-slate-500 italic">No diff available — this file may be newly added, or GitHub returned no patch.</div>`;
+            }
+            let added = 0, removed = 0;
+            const rows = patch.split('\n').map(line => {
+                let cls = 'text-slate-500 dark:text-slate-400', bg = '';
+                if (line.startsWith('@@')) {
+                    cls = 'text-purple-600 dark:text-purple-400 font-semibold'; bg = 'bg-purple-50 dark:bg-purple-900/20';
+                } else if (line.startsWith('+++') || line.startsWith('---')) {
+                    cls = 'text-slate-400 dark:text-slate-500';
+                } else if (line.startsWith('+')) {
+                    cls = 'text-emerald-700 dark:text-emerald-300'; bg = 'bg-emerald-50 dark:bg-emerald-900/20'; added++;
+                } else if (line.startsWith('-')) {
+                    cls = 'text-red-700 dark:text-red-300'; bg = 'bg-red-50 dark:bg-red-900/20'; removed++;
+                }
+                return `<div class="px-3 py-0.5 ${bg} ${cls} whitespace-pre-wrap break-words">${escapeHtml(line) || '&nbsp;'}</div>`;
+            }).join('');
+            const legend = `<div class="flex items-center gap-4 px-4 py-2 border-b border-slate-200 dark:border-slate-700/50 text-[0.7rem] font-medium bg-white/60 dark:bg-slate-800/40">
+                <span class="text-slate-500 dark:text-slate-400">Diff vs base branch</span>
+                <span class="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400"><span class="w-2.5 h-2.5 rounded-sm bg-emerald-400"></span>+${added} added (feature)</span>
+                <span class="inline-flex items-center gap-1.5 text-red-600 dark:text-red-400"><span class="w-2.5 h-2.5 rounded-sm bg-red-400"></span>-${removed} removed (main)</span>
+            </div>`;
+            return legend + `<div class="font-mono text-[12px] leading-relaxed py-2 overflow-x-auto">${rows}</div>`;
+        }
+
+        // Render a friendly identity instead of a raw service-account string.
+        function formatUserIdentity(email) {
+            if (!email) return { display: 'Unknown', initial: 'U', title: 'Unknown user' };
+            const isServiceAccount = /gserviceaccount\.com$/i.test(email) || /^\d{6,}-/.test(email) || /-compute@/i.test(email);
+            if (isServiceAccount) {
+                return { display: 'Service Account', initial: 'SA', title: email };
+            }
+            const name = email.split('@')[0];
+            return { display: email, initial: (name[0] || 'U').toUpperCase(), title: email };
         }
 
         // --- Core Application Logic & Modals ---
@@ -538,36 +676,70 @@
             } catch (err) {}
         });
 
+        // Keyboard navigation: Up/Down arrows move between visible files in the sidebar.
+        document.addEventListener('keydown', function(e) {
+            if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+            const tag = (e.target.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+            const layout = document.getElementById('results-layout');
+            if (!layout || layout.style.display === 'none') return;
+            const visible = Array.from(document.querySelectorAll('.sidebar-item')).filter(li => li.style.display !== 'none');
+            if (visible.length === 0) return;
+            e.preventDefault();
+            let idx = visible.findIndex(li => li.classList.contains('active'));
+            if (idx === -1) idx = 0;
+            else idx = e.key === 'ArrowDown' ? Math.min(idx + 1, visible.length - 1) : Math.max(idx - 1, 0);
+            activateFile(visible[idx].id.replace(/^nav-/, ''));
+        });
+
         // --- Layout Switching & Sidebars ---
 
+        // Active-state ring/background per filter tab (horizontal icon-chip legend).
+        const FILTER_ACTIVE = {
+            all:      ['bg-white','dark:bg-slate-700','ring-slate-300','dark:ring-slate-600','shadow-sm'],
+            issues:   ['bg-white','dark:bg-slate-700','ring-red-300','dark:ring-red-700','shadow-sm'],
+            optimize: ['bg-white','dark:bg-slate-700','ring-amber-300','dark:ring-amber-700','shadow-sm'],
+            autofix:  ['bg-white','dark:bg-slate-700','ring-blue-300','dark:ring-blue-700','shadow-sm'],
+            clean:    ['bg-white','dark:bg-slate-700','ring-emerald-300','dark:ring-emerald-700','shadow-sm'],
+        };
+
         window.filterSidebar = function(status) {
-            ['all', 'issues', 'autofix', 'clean'].forEach(id => {
+            ['all', 'issues', 'optimize', 'autofix', 'clean'].forEach(id => {
                 const btn = document.getElementById('filter-' + id);
-                if(id === status) btn.classList.add('bg-white', 'dark:bg-slate-700', 'shadow-sm', 'ring-1', 'ring-slate-300', 'dark:ring-slate-600');
-                else btn.classList.remove('bg-white', 'dark:bg-slate-700', 'shadow-sm', 'ring-1', 'ring-slate-300', 'dark:ring-slate-600');
+                if (!btn) return;
+                const activeCls = FILTER_ACTIVE[id];
+                if (id === status) {
+                    btn.classList.add(...activeCls);
+                    btn.classList.remove('ring-transparent');
+                } else {
+                    btn.classList.remove(...activeCls);
+                    btn.classList.add('ring-transparent');
+                }
             });
+            let visible = 0;
             document.querySelectorAll('.sidebar-item').forEach(li => {
-                const s = li.dataset.status;
-                // 'Optimize' findings are actionable, so they live under the Issues filter.
-                const match = status === 'all' || s === status || (status === 'issues' && s === 'optimize');
+                const match = status === 'all' || li.dataset.status === status;
                 li.style.display = match ? 'flex' : 'none';
+                if (match) visible++;
             });
+            const empty = document.getElementById('sidebar-empty');
+            if (empty) empty.style.display = visible === 0 ? 'block' : 'none';
         }
 
         window.updateFilterCounts = function() {
             const items = document.querySelectorAll('.sidebar-item');
-            const counts = { all: items.length, issues: 0, autofix: 0, clean: 0, optimize: 0 };
+            const counts = { all: items.length, issues: 0, optimize: 0, autofix: 0, clean: 0 };
             items.forEach(li => { counts[li.dataset.status] = (counts[li.dataset.status] || 0) + 1; });
             const set = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
             set('count-all', counts.all);
-            // 'Optimize' files have no dedicated tab, so surface them alongside issues in the count.
-            set('count-issues', counts.issues + counts.optimize);
+            set('count-issues', counts.issues);
+            set('count-optimize', counts.optimize);
             set('count-autofix', counts.autofix);
             set('count-clean', counts.clean);
         }
 
         window.switchCodeView = function(fileId, viewType) {
-            ['refactored', 'original', 'splitdiff', 'optimized'].forEach(type => {
+            ['refactored', 'original', 'splitdiff', 'optimized', 'changes'].forEach(type => {
                 const btn = document.getElementById(`btn-${fileId}-${type}`);
                 const view = document.getElementById(`view-${fileId}-${type}`);
                 if (btn && view) {
@@ -770,6 +942,71 @@
             document.getElementById('scorecardModal').style.display = 'none';
         }
 
+        // ---- Run Summary (metrics) popup ----
+        window.closeMetricsModal = function() {
+            document.getElementById('metricsModal').style.display = 'none';
+        };
+
+        window.openMetricsModal = function() {
+            const t = window.__runTotals;
+            if (!t) { showToast('Run an analysis first.', 'info'); return; }
+
+            // Status tally from the rendered files (matches the sidebar taxonomy).
+            const counts = { issues: 0, optimize: 0, autofix: 0, clean: 0 };
+            Object.values(window.fileDataStore || {}).forEach(f => {
+                if (counts[f.statusId] !== undefined) counts[f.statusId]++;
+            });
+            const totalFiles = (counts.issues + counts.optimize + counts.autofix + counts.clean) || (t.processed || 0);
+
+            // Work split (deterministic vs AI) based on which files actually spent tokens.
+            const processed = t.processed || 0;
+            const aiFiles = Math.min(t.aiFiles || 0, processed);
+            const detPct = processed > 0 ? Math.round((processed - aiFiles) / processed * 100) : 100;
+            const aiPct = 100 - detPct;
+
+            const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+
+            // Donut
+            const C = 326.726, detDash = C * detPct / 100;
+            const det = document.getElementById('mmDonutDet'), ai = document.getElementById('mmDonutAi');
+            det.setAttribute('stroke-dasharray', `${detDash.toFixed(1)} ${(C - detDash).toFixed(1)}`);
+            ai.setAttribute('stroke-dasharray', `${(C - detDash).toFixed(1)} ${detDash.toFixed(1)}`);
+            ai.setAttribute('stroke-dashoffset', `${(-detDash).toFixed(1)}`);
+            set('mmCenterPct', detPct + '%'); set('mmDetPct', detPct + '%'); set('mmAiPct', aiPct + '%');
+
+            // Headline + distribution bar
+            set('mmFiles', totalFiles);
+            const denom = totalFiles || 1, pct = n => (n / denom * 100).toFixed(2) + '%';
+            document.getElementById('mmSegIssues').style.width = pct(counts.issues);
+            document.getElementById('mmSegOptimize').style.width = pct(counts.optimize);
+            document.getElementById('mmSegAutofix').style.width = pct(counts.autofix);
+            document.getElementById('mmSegClean').style.width = pct(counts.clean);
+            set('mmCIssues', counts.issues); set('mmCOptimize', counts.optimize);
+            set('mmCAutofix', counts.autofix); set('mmCClean', counts.clean);
+
+            // Metric tiles
+            set('mmTime', (t.time || 0).toFixed(1) + 's');
+            set('mmTokens', (t.tokens || 0).toLocaleString());
+            set('mmCost', '$' + (t.cost || 0).toFixed(3));
+            const gb = t.scannedGB || 0;
+            const dataEl = document.getElementById('mmData');
+            dataEl.textContent = gb.toFixed(2) + ' GB';
+            dataEl.className = gb > 0
+                ? 'text-xl font-extrabold text-blue-600 dark:text-blue-400'
+                : 'text-xl font-extrabold text-slate-400 dark:text-slate-500';
+            const q = Math.min(gb / 10 * 100, 100), g = document.getElementById('mmDataGauge');
+            g.style.width = q + '%';
+            g.className = 'h-full rounded-full ' + (q > 80 ? 'bg-red-500' : q > 40 ? 'bg-amber-500' : 'bg-blue-400');
+            set('mmFileCount', processed);
+
+            // Cached badge (incremental skips)
+            const cached = document.getElementById('mmCached');
+            if ((t.skipped || 0) > 0) { cached.style.display = ''; cached.textContent = '↺ ' + t.skipped + ' cached'; }
+            else cached.style.display = 'none';
+
+            document.getElementById('metricsModal').style.display = 'flex';
+        };
+
         window.openBatchPushModal = function() {
             const keys = Object.keys(window.fileDataStore);
             if(keys.length === 0) return showToast("No files analyzed yet.", "error");
@@ -832,10 +1069,14 @@
 
         function resetRunUI() {
             // Always start a run from a clean slate — never show the previous run's dashboard/results.
-            ['errorMessage', 'infoBanner', 'results-layout', 'metricsBar', 'scanDashboard'].forEach(id => {
+            ['errorMessage', 'infoBanner', 'results-layout', 'metricsBar', 'scanDashboard', 'metricsModal'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.style.display = 'none';
             });
+            // Hide the (stale) Run Summary trigger + clear last-run totals until this run completes.
+            const rsb = document.getElementById('runSummaryBtn');
+            if (rsb) rsb.style.display = 'none';
+            window.__runTotals = null;
 
             document.getElementById('sidebar-list').innerHTML = '';
             renderedFilePayloads = {};
@@ -863,6 +1104,33 @@
             document.getElementById('loadingText').textContent = 'Fetching metadata...';
         }
 
+        // Run mode:
+        //   'incremental' = skip files with no new commit since last run (cache)
+        //   'full'        = re-scan every file, ignoring the cache
+        //   'diff'        = review ONLY the lines changed on the feature branch vs main
+        window.runMode = 'incremental';
+        window.setRunMode = function(mode) {
+            window.runMode = mode;
+            const btns = { incremental: document.getElementById('mode-incremental'),
+                           full: document.getElementById('mode-full'),
+                           diff: document.getElementById('mode-diff') };
+            const active = ['bg-white', 'dark:bg-slate-700', 'shadow-sm', 'text-slate-800', 'dark:text-white'];
+            const inactive = ['text-slate-500', 'dark:text-slate-400', 'hover:text-slate-800', 'dark:hover:text-white'];
+            Object.keys(btns).forEach(k => {
+                const b = btns[k];
+                if (!b) return;
+                if (k === mode) { b.classList.add(...active); b.classList.remove(...inactive); }
+                else { b.classList.remove(...active); b.classList.add(...inactive); }
+            });
+            const hint = document.getElementById('modeHint');
+            const hints = {
+                incremental: 'Skips unchanged files to save time & tokens',
+                full: 'Re-scans every file, ignoring the cache',
+                diff: 'Reviews only the lines changed vs main (cheapest scan)'
+            };
+            if (hint) hint.textContent = hints[mode] || hints.incremental;
+        };
+
         async function runReview() {
             const repoInput = document.getElementById('repo');
             const branchInput = document.getElementById('branch');
@@ -885,14 +1153,13 @@
                 const files = prepData.files;
                 if(!files || files.length === 0) throw new Error("No valid files found to review.");
 
-                let actualTokens = 0, actualTime = 0, totalBytes = 0, totalCost = 0;
+                let actualTokens = 0, actualTime = 0, totalBytes = 0, totalCost = 0, aiFileCount = 0;
 
                 document.getElementById('sidebar-list').innerHTML = '';
                 renderedFilePayloads = {};
                 window.fileDataStore = {};
 
                 document.getElementById('results-layout').style.display = 'flex';
-                document.getElementById('metricsBar').style.display = 'block';
                 document.getElementById('scanDashboard').style.display = 'block';
 
                 const repoContextStr = files.map(f => f.filename).join(", ");
@@ -902,22 +1169,28 @@
                 // Commit-aware incremental run: decide UP FRONT which files actually need scanning
                 // (changed since the last run), so all counters reflect this run, not the full repo.
                 const runCache = loadRunCache();
+                const fullRun = window.runMode === 'full';
+                const diffRun = window.runMode === 'diff';
+                // The content this run reviews per file: full file, or only the changed lines in Diff Only mode.
+                const contentFor = (f) => diffRun ? (f.diff_content || f.content || '') : (f.content || '');
                 const plan = files.map(f => {
                     const key = `${repoVal}::${branchVal}::${f.filename}`;
                     const c = runCache[key];
-                    const willSkip = !!(c && f.sha && c.sha === f.sha && c.result);
+                    // Full-run and Diff-only modes never skip; incremental skips files with no new commit.
+                    const willSkip = !fullRun && !diffRun && !!(c && f.sha && c.sha === f.sha && c.result);
                     return { file: f, key, willSkip };
                 });
                 const toProcessCount = plan.filter(p => !p.willSkip).length;
                 let skippedCount = 0, processedCount = 0;
 
-                // Estimate based ONLY on the files that will actually be scanned this run.
+                // Estimate based ONLY on the files (and the content slice) actually scanned this run.
                 const complexRe = /\bJOIN\b|\bGROUP\s+BY\b|OVER\s*\(|\bPARTITION\s+BY\b|\bUNION\b/i;
                 let estAiFiles = 0, estAiChars = 0;
                 plan.filter(p => !p.willSkip).forEach(p => {
                     const f = p.file;
-                    if (f.filename.toLowerCase().endsWith('.sql') && complexRe.test(f.content || '')) {
-                        estAiFiles++; estAiChars += (f.content || '').length;
+                    const slice = contentFor(f);
+                    if (f.filename.toLowerCase().endsWith('.sql') && complexRe.test(slice)) {
+                        estAiFiles++; estAiChars += slice.length;
                     }
                 });
                 const estTimeVal = toProcessCount ? (2.0 + estAiFiles * 10 + (toProcessCount - estAiFiles) * 0.2) : 0;
@@ -942,9 +1215,14 @@
                     }
 
                     processedCount++;
-                    startLoadingText(`Scanning [${processedCount}/${toProcessCount}]: ${currentFile.filename}`);
+                    const scanLabel = diffRun ? 'Diff scan' : 'Scanning';
+                    startLoadingText(`${scanLabel} [${processedCount}/${toProcessCount}]: ${currentFile.filename}`);
                     const processPayload = {
-                        ...currentFile,
+                        filename: currentFile.filename,
+                        // In Diff Only mode we review just the changed lines (feature vs main).
+                        content: contentFor(currentFile),
+                        sha: currentFile.sha,
+                        scope: diffRun ? 'diff' : 'full',
                         repo_context: `The following files are also part of this PR context: ${repoContextStr}`,
                         repo_name: repoVal
                     };
@@ -953,39 +1231,32 @@
                     const fileResult = await processResponse.json();
                     if (!processResponse.ok) throw new Error(fileResult.error || `Failed on ${currentFile.filename}`);
                     fileResult._cached = false;
+                    // Carry the raw git diff (vs base branch) + run mode so the UI can show "what changed".
+                    fileResult.patch = currentFile.patch || '';
+                    fileResult.review_scope = window.runMode;
 
                     // Only freshly-processed files add to the token/time/cost totals.
                     actualTokens += fileResult.tokens || 0;
                     actualTime += fileResult.time_taken || 0;
                     totalBytes += fileResult.bq_bytes || 0;
                     totalCost += fileResult.cost || 0;
+                    if ((fileResult.tokens || 0) > 0) aiFileCount++;  // files that actually spent AI tokens
 
                     // Cache this result against its commit SHA for the next run.
                     runCache[cacheKey] = { sha: currentFile.sha || '', result: fileResult };
 
                     if (processedCount === 1 && fileResult.user_email) {
-                        document.getElementById('user-badge-email').innerText = fileResult.user_email;
-                        document.getElementById('user-badge-initial').innerText = fileResult.user_email.charAt(0).toUpperCase();
+                        const u = formatUserIdentity(fileResult.user_email);
+                        const emailEl = document.getElementById('user-badge-email');
+                        emailEl.innerText = u.display;
+                        emailEl.title = u.title;
+                        document.getElementById('user-badge-initial').innerText = u.initial;
                     }
 
+                    // Live progress on the loading screen (final totals are shown in the Run Summary popup).
                     document.getElementById('actualTokens').textContent = actualTokens.toLocaleString();
                     document.getElementById('actualTime').textContent = actualTime.toFixed(1) + 's';
                     document.getElementById('actualFiles').textContent = `${processedCount} / ${toProcessCount}`;
-                    document.getElementById('timeTaken').textContent = actualTime.toFixed(1) + "s";
-                    document.getElementById('tokenCount').textContent = actualTokens.toLocaleString();
-                    document.getElementById('finopsCost').textContent = "$" + totalCost.toFixed(3);
-
-                    const scannedGB = totalBytes / 1073741824;
-                    document.getElementById('dataScanned').textContent = scannedGB.toFixed(2) + " GB";
-
-                    const quotaPercent = Math.min((scannedGB / 10) * 100, 100);
-                    const gauge = document.getElementById('finopsGauge');
-                    gauge.style.width = `${quotaPercent}%`;
-                    if(quotaPercent > 80) gauge.className = 'bg-red-500 h-full transition-all duration-500';
-                    else if(quotaPercent > 40) gauge.className = 'bg-amber-500 h-full transition-all duration-500';
-                    else gauge.className = 'bg-blue-500 h-full transition-all duration-500';
-
-                    document.getElementById('fileCount').textContent = `${processedCount}`;
 
                     renderSingleFile(fileResult, processedCount === 1);
                 }
@@ -996,11 +1267,21 @@
                 if (processedCount === 0) {
                     // Nothing changed since the last run — show only a message, no file list.
                     document.getElementById('results-layout').style.display = 'none';
-                    document.getElementById('metricsBar').style.display = 'none';
                     document.getElementById('infoDetails').textContent = `No new commits since the last run — all ${skippedCount} file(s) are up to date. Nothing to review.`;
                     document.getElementById('infoBanner').style.display = 'flex';
-                } else if (skippedCount > 0) {
-                    showToast(`Reviewed ${processedCount} changed file(s); skipped ${skippedCount} with no new commits.`, "info");
+                } else {
+                    if (skippedCount > 0) {
+                        showToast(`Reviewed ${processedCount} changed file(s); skipped ${skippedCount} with no new commits.`, "info");
+                    }
+                    // Stash this run's totals, reveal the Run Summary trigger, and auto-open the popup.
+                    window.__runTotals = {
+                        time: actualTime, tokens: actualTokens, cost: totalCost,
+                        scannedGB: totalBytes / 1073741824,
+                        processed: processedCount, skipped: skippedCount, aiFiles: aiFileCount
+                    };
+                    const rsb = document.getElementById('runSummaryBtn');
+                    if (rsb) rsb.style.display = 'flex';
+                    openMetricsModal();
                 }
 
             } catch (error) {
@@ -1139,6 +1420,8 @@
                 airflow_tasks: fileResult.airflow_tasks || {},
                 scorecard: fileResult.scorecard || { performance: 100, cost_efficiency: 100, security: 100, compliance: 100 },
                 cached: !!fileResult._cached,
+                patch: fileResult.patch || '',
+                isDiff: fileResult.review_scope === 'diff',
                 chatHistory: []
             };
 
@@ -1166,7 +1449,7 @@
                 if (window.fileDataStore[safeId].localFixesArray.length > 0) {
                     statusId = 'autofix';
                     iconHtml = `<svg class="w-4 h-4 text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>`;
-                    badgeHtml = `<span class="bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-emerald-800 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Auto-Fix</span>`;
+                    badgeHtml = `<span class="bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase">Auto-Fixed</span>`;
                 }
             } else {
                 statusId = 'optimize';
@@ -1175,6 +1458,16 @@
             }
 
             window.fileDataStore[safeId].badgeHtml = badgeHtml;
+            window.fileDataStore[safeId].statusId = statusId;
+            window.fileDataStore[safeId].isCritical = isCritical;
+
+            // Lowest scorecard metric → quick triage chip in the sidebar.
+            const sc = window.fileDataStore[safeId].scorecard;
+            const lowest = Math.min(sc.performance, sc.cost_efficiency, sc.security, sc.compliance);
+            const scoreColor = lowest > 80 ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30'
+                : lowest > 50 ? 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30'
+                : 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30';
+            const scoreChip = `<span title="Lowest quality score" class="text-[0.6rem] font-bold px-1.5 py-0.5 rounded ${scoreColor}">${lowest}</span>`;
 
             const sidebarList = document.getElementById('sidebar-list');
             const sidebarItem = document.createElement('li');
@@ -1183,11 +1476,12 @@
             sidebarItem.dataset.status = statusId;
             sidebarItem.onclick = () => activateFile(safeId);
             sidebarItem.innerHTML = `
-                <div class="flex items-center justify-between w-full">
+                <div class="flex items-center justify-between w-full gap-2">
                     <div class="flex items-center gap-2 overflow-hidden">
                         ${iconHtml}
                         <span class="text-sm font-semibold text-slate-700 dark:text-slate-300 truncate">${filename}</span>
                     </div>
+                    ${scoreChip}
                 </div>
                 <div class="flex items-center justify-between pl-6">
                     <span class="text-xs text-slate-400 font-mono">${ext.toUpperCase()}</span>
@@ -1258,9 +1552,12 @@
 
             let bqHtml = '';
             if (data.bq_metrics) {
-                const bqColor = data.bq_metrics.valid 
-                    ? 'bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800' 
-                    : 'bg-red-50 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800';
+                // valid===true → blue (passed); valid===false → red (error); null/undefined → gray (skipped).
+                const bqColor = data.bq_metrics.valid === true
+                    ? 'bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800'
+                    : (data.bq_metrics.valid === false
+                        ? 'bg-red-50 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-800'
+                        : 'bg-slate-50 text-slate-600 border-slate-200 dark:bg-slate-800/40 dark:text-slate-400 dark:border-slate-700');
                 
                 bqHtml = `<div class="mt-4 p-3.5 rounded-xl border ${bqColor} flex flex-col gap-2 text-sm font-medium overflow-visible">
                             <span class="flex items-center gap-2 font-bold shrink-0">
@@ -1310,6 +1607,27 @@
             const isComplexOptimization = data.reviewPart && data.reviewPart.length > 300;
             const glowClass = isComplexOptimization ? "ring-2 ring-brand-500/50 shadow-lg shadow-brand-500/20 border-transparent" : "border-slate-100 dark:border-slate-700";
 
+            // For Issues/Critical files, lead the review panel with the concrete action required
+            // (instead of the AI's "no optimization needed" note, which reads as "all good").
+            let actionCallout = '';
+            if (data.statusId === 'issues') {
+                // The raw BigQuery dry-run error is already shown in the linter panel — keep its
+                // noisy URL/Job-ID text OUT of the AI Architect Review block. Lead with a real,
+                // human-readable linter finding instead; if the ONLY finding is the dry-run error,
+                // point the user to the panel rather than dumping the raw message here.
+                const isBqError = i => /bigquery (engine|validation)|bq syntax error|prettyPrint|unrecognized name|googleapis\.com/i.test(i);
+                const fixes = (data.localFixesArray || []).filter(i => !isBqError(i));
+                let top = fixes.find(i => /critical|security|error|dangerous|finops|mandatory/i.test(i)) || fixes[0];
+                if (!top) top = 'BigQuery validation failed — see the Dry Run details in the Deterministic Linter panel.';
+                const tone = data.isCritical
+                    ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
+                    : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300';
+                actionCallout = `<div class="mb-4 p-3 rounded-lg border ${tone} text-sm font-medium flex items-start gap-2">
+                    <span class="shrink-0">${data.isCritical ? '🛑' : '⚠️'}</span>
+                    <span><strong>${data.isCritical ? 'Action required (critical):' : 'Action required:'}</strong> ${escapeHtml(top)}</span>
+                </div>`;
+            }
+
             renderedFilePayloads[safeId] = `
                 <div class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-6 md:p-8 animate-[fadeIn_0.3s_ease-out] w-full min-w-0">
                     <div class="flex items-center justify-between mb-8 border-b border-slate-100 dark:border-slate-800 pb-4">
@@ -1327,16 +1645,16 @@
                         <div class="bg-slate-50/50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-700 h-fit overflow-hidden">
                             <div class="flex border-b border-slate-200 dark:border-slate-700 text-xs font-bold uppercase tracking-wider bg-slate-100 dark:bg-slate-800/40">
                                 <button onclick="switchLeftTab('${safeId}', 'linter')" id="tab-btn-${safeId}-linter" class="flex-1 py-3 text-center border-b-2 border-blue-500 text-blue-600 dark:text-blue-400 cursor-pointer">Deterministic Linter</button>
-                                <button onclick="switchLeftTab('${safeId}', 'schema')" id="tab-btn-${safeId}-schema" class="flex-1 py-3 text-center text-slate-500 dark:text-slate-400 cursor-pointer">${data.ext === 'py' ? 'Airflow Task Graph' : 'Schema Explorer'}</button>
+                                ${data.ext !== 'ksh' ? `<button onclick="switchLeftTab('${safeId}', 'schema')" id="tab-btn-${safeId}-schema" class="flex-1 py-3 text-center text-slate-500 dark:text-slate-400 cursor-pointer">${data.ext === 'py' ? 'Airflow Task Graph' : 'Schema Explorer'}</button>` : ''}
                                 ${data.ext === 'sql' ? `<button onclick="switchLeftTab('${safeId}', 'preview')" id="tab-btn-${safeId}-preview" class="flex-1 py-3 text-center text-slate-500 dark:text-slate-400 cursor-pointer">AI Data Preview</button>` : ''}
                             </div>
-                            
+
                             <div id="tab-content-${safeId}-linter" class="p-5" style="display: block;">
                                 <ul class="space-y-1">${fixesHtml}</ul>
                                 ${bqHtml}
                             </div>
-                            <div id="tab-content-${safeId}-schema" class="p-5 max-h-[350px] overflow-y-auto" style="display: none;">${schemaHtml}</div>
-                            <div id="tab-content-${safeId}-preview" class="p-5 max-h-[350px] overflow-y-auto" style="display: none;"></div>
+                            ${data.ext !== 'ksh' ? `<div id="tab-content-${safeId}-schema" class="p-5 max-h-[350px] overflow-y-auto" style="display: none;">${schemaHtml}</div>` : ''}
+                            ${data.ext === 'sql' ? `<div id="tab-content-${safeId}-preview" class="p-5 max-h-[350px] overflow-y-auto" style="display: none;"></div>` : ''}
                         </div>
 
                         <div class="bg-white/40 dark:bg-slate-800/30 p-6 rounded-xl border ${glowClass} markdown-body max-h-[400px] overflow-y-auto backdrop-blur-sm transition-all duration-300">
@@ -1344,6 +1662,7 @@
                                 <span class="flex items-center gap-2"><div class="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse"></div> AI Architect Review</span>
                                 ${isComplexOptimization ? '<span class="text-[9px] text-brand-500 bg-brand-50 dark:bg-brand-900/30 px-2 py-0.5 rounded-full">Deep Optimization Detected</span>' : ''}
                             </h4>
+                            ${actionCallout}
                             <div class="text-sm text-slate-700 dark:text-slate-300">${marked.parse(data.reviewPart)}</div>
                         </div>
                     </div>
@@ -1356,6 +1675,7 @@
                                     <button onclick="switchCodeView('${safeId}', 'refactored')" id="btn-${safeId}-refactored" class="text-[0.65rem] font-mono bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded px-2.5 py-1 uppercase tracking-wider transition-all shadow-sm cursor-pointer">Linter Fixed</button>
                                     <button onclick="switchCodeView('${safeId}', 'original')" id="btn-${safeId}-original" class="text-[0.65rem] font-mono text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer">Original</button>
                                     <button onclick="switchCodeView('${safeId}', 'splitdiff')" id="btn-${safeId}-splitdiff" class="text-[0.65rem] font-mono text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer">Split Diff View</button>
+                                    ${data.patch ? `<button onclick="switchCodeView('${safeId}', 'changes')" id="btn-${safeId}-changes" class="text-[0.65rem] font-mono text-emerald-600 dark:text-emerald-400 hover:text-emerald-800 dark:hover:text-emerald-300 bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer">🔀 Changes</button>` : ''}
                                     ${data.aiOptimizedCode ? `<button onclick="switchCodeView('${safeId}', 'optimized')" id="btn-${safeId}-optimized" class="text-[0.65rem] font-mono text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-300 bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer">✨ AI Optimized</button>` : ''}
                                 </div>
                             </div>
@@ -1369,6 +1689,7 @@
                         <div id="view-${safeId}-splitdiff" class="code-view w-full border-t border-slate-200 dark:border-slate-700/50 h-[400px]" style="display: none;">
                             <div id="monaco-diff-container-${safeId}" class="w-full h-full"></div>
                         </div>
+                        ${data.patch ? `<div id="view-${safeId}-changes" class="code-view w-full border-t border-slate-200 dark:border-slate-700/50 max-h-[400px] overflow-y-auto bg-white dark:bg-[#0f172a]" style="display: none;">${renderPatchHtml(data.patch)}</div>` : ''}
                         ${data.aiOptimizedCode ? `
                         <div id="view-${safeId}-optimized" class="code-view w-full border-t border-slate-200 dark:border-slate-700/50" style="display: none;">
                             <div class="flex items-center justify-between gap-3 px-4 py-2 bg-purple-50/60 dark:bg-purple-900/20 border-b border-purple-100 dark:border-purple-900/40">
@@ -1402,7 +1723,10 @@
         function activateFile(id) {
             document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active', 'bg-blue-50', 'dark:bg-slate-800'));
             const targetNav = document.getElementById(`nav-${id}`);
-            if(targetNav) targetNav.classList.add('active', 'bg-blue-50', 'dark:bg-slate-800');
+            if(targetNav) {
+                targetNav.classList.add('active', 'bg-blue-50', 'dark:bg-slate-800');
+                targetNav.scrollIntoView({ block: 'nearest' });
+            }
 
             const canvas = document.getElementById('main-canvas');
             canvas.innerHTML = renderedFilePayloads[id];
@@ -1442,14 +1766,21 @@
             canvas.querySelectorAll('.code-view pre code').forEach((block) => {
                 hljs.highlightElement(block);
             });
+
+            // In Diff Only mode, lead with the "what changed" view so the diff is front-and-center.
+            const fdata = window.fileDataStore[id];
+            if (fdata && fdata.isDiff && fdata.patch) {
+                switchCodeView(id, 'changes');
+            }
         }
 
         window.exportMarkdownReport = function() {
             let mdContent = `# 📑 AI Code Audit Report\n\n`;
             mdContent += `**Repository:** ${document.getElementById('repo').value}\n`;
             mdContent += `**Branch:** ${document.getElementById('branch').value}\n`;
-            mdContent += `**Total Files Scanned:** ${document.getElementById('fileCount').textContent}\n`;
-            mdContent += `**Total Tokens Used:** ${document.getElementById('tokenCount').textContent}\n\n`;
+            const _rt = window.__runTotals || {};
+            mdContent += `**Total Files Scanned:** ${_rt.processed != null ? _rt.processed : Object.keys(window.fileDataStore || {}).length}\n`;
+            mdContent += `**Total Tokens Used:** ${(_rt.tokens || 0).toLocaleString()}\n\n`;
             mdContent += `---\n\n`;
 
             Object.values(window.fileDataStore).forEach(file => {
