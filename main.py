@@ -6,7 +6,8 @@ import json
 import re
 import subprocess
 import urllib.request
-from flask import Flask, request, jsonify
+from functools import wraps
+from flask import Flask, request, jsonify, session, redirect
 from flask_cors import CORS
 
 # Modern SDK imports
@@ -14,16 +15,67 @@ from google import genai
 from google.cloud import bigquery
 from github import Github
 
+# Google Sign-In (ID token verification)
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_auth_requests
+
 try:
     from google.genai import types as genai_types
 except Exception:
     genai_types = None
 
 # Import our local rule engine
-from linter import process_file_locally
+from linter import process_file_locally, DEFAULT_SQL_DATASET_MAP
+
+
+def load_secret(name, default=""):
+    """Read a secret. If USE_SECRET_MANAGER=1, pull `name` from Google Secret Manager
+    (project from SECRET_MANAGER_PROJECT or the default project); otherwise use the env var.
+    Always falls back to the env var so local/dev keeps working."""
+    env_val = os.environ.get(name, default)
+    if os.environ.get("USE_SECRET_MANAGER", "").strip() != "1":
+        return env_val
+    try:
+        from google.cloud import secretmanager
+        client_sm = secretmanager.SecretManagerServiceClient()
+        project = os.environ.get("SECRET_MANAGER_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        path = f"projects/{project}/secrets/{name}/versions/latest"
+        return client_sm.access_secret_version(name=path).payload.data.decode("utf-8").strip()
+    except Exception:
+        return env_val  # fall back to env if Secret Manager is unavailable/misconfigured
+
 
 app = Flask(__name__)
-CORS(app)
+# Signed-session secret — set FLASK_SECRET_KEY (or store it in Secret Manager) in production.
+app.secret_key = load_secret("FLASK_SECRET_KEY", "dev-insecure-secret-change-me")
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "1") == "1",
+    PERMANENT_SESSION_LIFETIME=datetime.timedelta(hours=12),
+)
+CORS(app, supports_credentials=True)
+
+# --- Google OAuth / access policy ---
+GOOGLE_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+# Optional Workspace-domain restriction. Empty = allow ANY Google account.
+ALLOWED_EMAIL_DOMAIN = os.environ.get("ALLOWED_EMAIL_DOMAIN", "").strip().lower()
+
+# Auth is OPT-IN: it only turns on when a Google OAuth client ID is configured.
+# With no client ID the app runs ungated (so it works out of the box / stays generic).
+AUTH_ENABLED = bool(GOOGLE_OAUTH_CLIENT_ID)
+
+
+def login_required(view):
+    """Reject UI/API calls without an authenticated session — but ONLY when auth is enabled.
+    If GOOGLE_OAUTH_CLIENT_ID isn't set, auth is off and requests pass through."""
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if AUTH_ENABLED and not session.get('user_email'):
+            return jsonify({"error": "Authentication required. Please sign in.", "auth_required": True}), 401
+        return view(*args, **kwargs)
+    return wrapper
+
 
 # Initialize the new Google GenAI Client
 client = genai.Client(vertexai=True, location="us-central1")
@@ -31,7 +83,19 @@ bq_client = bigquery.Client()
 
 BQ_ANALYTICS_TABLE = os.environ.get("BQ_ANALYTICS_TABLE", "code_review_analytics.scan_history")
 FINOPS_MAX_BYTES_THRESHOLD = int(os.environ.get("FINOPS_MAX_BYTES_THRESHOLD", 10 * 1024 * 1024 * 1024))
+# Primary model + a known-good fallback. The default MUST be a model the project can actually
+# reach (a non-existent id 404s on every call). gemini-2.5-flash is the verified-available default;
+# set GEMINI_MODEL to a newer one ONLY if your Vertex project has access to it.
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
+# Higher-quality model the UI toggle can switch to per-scan (slower + pricier). Must be a model
+# your Vertex project/region can reach; override the id if yours differs.
+GEMINI_PRO_MODEL = os.environ.get("GEMINI_PRO_MODEL", "gemini-2.5-pro")
+# Hard ceiling on a single response's output tokens, and the largest file (in lines) for which
+# we let the AI attempt a FULL rewrite. Beyond that we switch to advisory-only so a long file is
+# never half-emitted (which previously looked like the AI "deleting" code). Both are overridable.
+AI_MAX_OUTPUT_TOKENS = int(os.environ.get("AI_MAX_OUTPUT_TOKENS", "32768"))
+AI_FULL_REWRITE_MAX_LINES = int(os.environ.get("AI_FULL_REWRITE_MAX_LINES", "1200"))
 
 
 def _parse_kv(raw):
@@ -50,9 +114,39 @@ def _parse_kv(raw):
 # --- Generic, deployment-configured conventions (NO hardcoded business names) ---
 # ${TEMPLATE_VAR} dataset references -> the real BigQuery dataset they resolve to.
 # Used to fetch the LIVE schema and to make dry-runs parseable. Override per deployment.
-SQL_DATASET_MAP = _parse_kv(os.environ.get("SQL_DATASET_MAP", "AEDW_DB=DB_AEDWD2"))
+# Default is shared with linter.py (DEFAULT_SQL_DATASET_MAP) so the parameterizer and the
+# resolver always agree — otherwise a ${VAR} the linter emits can't be resolved/validated.
+SQL_DATASET_MAP = _parse_kv(os.environ.get("SQL_DATASET_MAP", DEFAULT_SQL_DATASET_MAP))
 # Other ${TEMPLATE_VAR} placeholders -> concrete values, used only so a dry-run can parse.
 SQL_RUNTIME_VARS = _parse_kv(os.environ.get("SQL_RUNTIME_VARS", "ETL_BATCH_SK=12345,env=dev"))
+
+
+def _has_structural_placeholders(code):
+    """True when the linter left ANY placeholder behind — a mandatory-filter / join-condition
+    stub, or a generated target column list. Used to BYPASS the dry-run, since none of these are
+    runnable BigQuery. Matches ONLY the linter's unique sentinels (the angle-bracket stubs and the
+    'replace placeholder names' col-list tag), NOT a generic word like 'TODO' — otherwise a user's
+    own `-- TODO: ...` comment would wrongly bypass validation."""
+    return _has_human_required_placeholders(code) or _has_ai_resolvable_placeholders(code)
+
+
+def _has_ai_resolvable_placeholders(code):
+    """Subset of placeholders the AI can actually fill from the LIVE SCHEMA — a generated
+    target column list (the linter tags these with a unique 'replace placeholder names'
+    comment, so this matches any column count, including a single column). EXCLUDES the
+    human-decision stubs (<MISSING_FILTER_REQUIRED> / <JOIN_CONDITION_REQUIRED>): the rules
+    forbid the AI from inventing a DELETE/UPDATE filter or guessing a join key, so escalating
+    for those alone would just burn a token-call the human still has to redo."""
+    return 'replace placeholder names' in code or bool(re.search(r'\bcol1,\s*col2\b', code))
+
+
+def _has_human_required_placeholders(code):
+    """A stub ONLY a human can resolve — a mandatory DELETE/UPDATE filter, or a join condition
+    the schema doesn't dictate. The query is CRITICAL and can't even be dry-run until it's filled
+    in, and the linter already flagged it deterministically. So we DON'T spend AI on the file
+    (no tokens re-stating a check the linter made); it's re-evaluated on the next scan once the
+    human supplies the intent."""
+    return any(p in code for p in ('<MISSING_FILTER_REQUIRED>', '<JOIN_CONDITION_REQUIRED>'))
 
 
 def clean_bq_error(msg):
@@ -69,27 +163,89 @@ def clean_bq_error(msg):
     return core or msg
 
 
-def generate_ai(prompt, max_output_tokens=2048):
+def generate_ai(prompt, max_output_tokens=4096, model=None):
     """Single entry point for all Gemini calls — token-frugal by default.
+    `model` lets a caller override the default for one call (e.g. the UI's Flash→Pro toggle).
 
-    Key savings on Gemini 2.5 Flash:
+    Key savings:
       - thinking_budget=0  -> disables the model's internal "thinking" tokens
                               (the largest hidden cost), restoring fast/cheap calls.
       - low temperature    -> deterministic, no wasted re-sampling.
-      - capped output      -> bounded response size.
-    Falls back to a plain call if the installed SDK predates these config options.
+    The OUTPUT cap is sized by the caller to the file: too small a cap is what made the model
+    stop mid-file and look like it was deleting lines, so callers pass a budget scaled to the
+    code length (clamped to AI_MAX_OUTPUT_TOKENS). Falls back to a plain call on older SDKs, and
+    to GEMINI_FALLBACK_MODEL if the configured model is unavailable (404 / no access), so a model
+    misconfiguration degrades to a working model instead of failing every review.
     """
+    primary = model or GEMINI_MODEL
+    capped = max(1024, min(int(max_output_tokens or 4096), AI_MAX_OUTPUT_TOKENS))
+    try:
+        return _generate_with_model(primary, prompt, capped)
+    except Exception as e:
+        if (GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != primary
+                and _is_model_unavailable(e)):
+            return _generate_with_model(GEMINI_FALLBACK_MODEL, prompt, capped)
+        raise
+
+
+def _is_model_unavailable(err):
+    """Did the call fail because the MODEL id is wrong / inaccessible (vs. a transient error)?
+    Used to decide whether retrying on the fallback model is worthwhile."""
+    s = str(err).lower()
+    return ('not_found' in s or '404' in s or 'was not found' in s
+            or 'does not have access' in s or 'is not allowed' in s
+            or 'invalid model' in s or 'unknown model' in s)
+
+
+def _generate_with_model(model, prompt, capped):
+    """One generate_content call for a specific model. Tries the rich config first and degrades
+    to a plain call only for CONFIG/SDK problems — a model-not-found error is re-raised so the
+    caller can switch models rather than silently retrying the same bad id without config."""
     if genai_types is not None:
         try:
             config = genai_types.GenerateContentConfig(
                 temperature=0.1,
-                max_output_tokens=max_output_tokens,
+                max_output_tokens=capped,
                 thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
             )
-            return client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=config)
-        except Exception:
-            pass
-    return client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+            return client.models.generate_content(model=model, contents=prompt, config=config)
+        except Exception as e:
+            if _is_model_unavailable(e):
+                raise
+            # else: older SDK without these config options — fall through to a plain call.
+    return client.models.generate_content(model=model, contents=prompt)
+
+
+def _estimate_tokens(text):
+    """Cheap token estimate (~4 chars/token) for sizing the output budget."""
+    return max(1, len(text or "") // 4)
+
+
+def _response_was_truncated(response):
+    """Best-effort: did the model stop because it hit the output cap (MAX_TOKENS)? Used to
+    discard a partial rewrite. Tolerant of SDK shape differences — returns False if unknown."""
+    try:
+        fr = response.candidates[0].finish_reason
+        name = getattr(fr, "name", str(fr)).upper()
+        return "MAX_TOKEN" in name or "LENGTH" in name
+    except Exception:
+        return False
+
+
+def _ai_rewrite_is_safe(original, suggestion, ext):
+    """Last-resort guard against a CATASTROPHICALLY short rewrite (a clearly broken/truncated
+    response), used only when the reliable signal — finish_reason == MAX_TOKENS — is unavailable.
+
+    It is deliberately LENIENT: a legitimate refactor often removes lines (e.g. redundant echoes,
+    consolidated UNIONs), so we must NOT reject a complete-but-shorter rewrite — doing so was what
+    hid the AI tab entirely. We reject only when almost everything is gone (<35% of non-blank lines)."""
+    o = [l for l in (original or "").split('\n') if l.strip()]
+    s = [l for l in (suggestion or "").split('\n') if l.strip()]
+    if not s:
+        return False
+    if len(o) >= 12 and len(s) < 0.35 * len(o):
+        return False
+    return True
 
 def load_rules_from_file(filepath):
     try:
@@ -212,9 +368,20 @@ def needs_ai_review(filename, content):
 
     if fn.endswith('.sql'):
         up = text.upper()
-        # Set-based / multi-table / windowed / CTE SQL has real optimization scope.
-        signals = ['JOIN ', 'GROUP BY', 'OVER (', 'OVER(', 'PARTITION BY', 'UNION', 'WITH ', '(SELECT']
-        return any(s in up for s in signals)
+        # Escalate ONLY on a deterministic RED FLAG an expert would genuinely want to look at —
+        # NOT the mere presence of JOIN/GROUP BY. A well-formed single-join, filtered, aggregated
+        # query almost always comes back "it's fine", so asking the AI there just burns tokens
+        # (the user can still force a review via the Architect chat). Red flags worth the spend:
+        return (
+            'SELECT *' in up                                              # scanning all columns / schema drift
+            or 'CROSS JOIN' in up                                         # explicit Cartesian product
+            or (' JOIN ' in up and ' ON ' not in up and ' USING' not in up)  # join missing its condition
+            or up.count(' JOIN ') >= 3                                    # many joins → join-order matters
+            or 'UNION' in up                                             # set ops (dedup / consolidation cost)
+            or 'OVER(' in up or 'OVER (' in up                           # window functions (incl. PARTITION BY)
+            or '(SELECT' in up.replace(' ', '')                          # nested / correlated subqueries / CTEs
+            or (' JOIN ' in up and ' WHERE ' not in up)                  # unfiltered join → full-table scan
+        )
 
     if fn.endswith('.py'):
         # Only sizeable Airflow DAGs (real task graphs) have structural optimization scope.
@@ -242,7 +409,11 @@ def get_local_gcloud_account():
     return None
 
 def get_user_identity():
-    """Dynamically extracts authenticated user email from IAP, Compute Metadata, or local GCloud CLI."""
+    """Dynamically extracts the user email from the signed-in session, IAP, Compute Metadata, or local GCloud CLI."""
+    # 0. Authenticated in-app Google sign-in (highest priority).
+    if session.get('user_email'):
+        return session['user_email']
+
     # 1. Try Identity-Aware Proxy (IAP) headers
     email = request.headers.get('X-Inbound-User-Email') or request.headers.get('X-Goog-Authenticated-User-Email')
     if email:
@@ -265,6 +436,29 @@ def get_user_identity():
 
     return "unknown-user@company.com"
 
+# --- In-memory TTL cache for live BigQuery table schemas (they rarely change) ---
+_SCHEMA_CACHE = {}
+SCHEMA_CACHE_TTL = int(os.environ.get("SCHEMA_CACHE_TTL", 300))  # seconds
+
+
+def get_table_columns_cached(resolved_dataset, table):
+    """Return [{name,type,mode}, ...] for a table, cached in-memory with a TTL so the
+    same table isn't re-fetched from BigQuery on every file/run. Returns [] when the
+    table can't be read (and caches that miss briefly to avoid hammering get_table)."""
+    key = f"{resolved_dataset}.{table}"
+    now = time.time()
+    hit = _SCHEMA_CACHE.get(key)
+    if hit and (now - hit[0]) < SCHEMA_CACHE_TTL:
+        return hit[1]
+    try:
+        table_ref = bq_client.get_table(f"{bq_client.project}.{resolved_dataset}.{table}")
+        cols = [{"name": f.name, "type": f.field_type, "mode": f.mode} for f in table_ref.schema]
+    except Exception:
+        cols = []
+    _SCHEMA_CACHE[key] = (now, cols)
+    return cols
+
+
 def resolve_dataset_for_metadata(dataset_name):
     """Resolve a (possibly ${templated}) dataset name to its real BigQuery dataset,
     using the configured SQL_DATASET_MAP. Fully generic — no hardcoded dataset names."""
@@ -276,41 +470,47 @@ def resolve_dataset_for_metadata(dataset_name):
             return real
     return clean
 
+
+def _is_known_dataset(dataset_name):
+    """True only for a configured ${VAR} or a real dataset name we know about. This is how
+    we tell a genuine `dataset.table` reference from a table-alias.column one (e.g. HC.CLM_ID),
+    which must NOT be treated as a table in the schema explorer / live-schema context."""
+    clean = dataset_name.replace('${', '').replace('}', '').lower()
+    for var, real in SQL_DATASET_MAP.items():
+        if clean == var.lower() or clean == real.lower():
+            return True
+    return False
+
+
+def _extract_table_refs(sql_query):
+    """Ordered, de-duplicated list of REAL (display_dataset, table) references.
+
+    Includes `${VAR}.table` and `KnownDataset.table`, but EXCLUDES alias.column refs
+    (HC.CLM_ID) and any unknown prefix — so neither the schema explorer nor the AI's
+    live-schema context is polluted with non-tables. De-dup is by RESOLVED dataset, so the
+    same physical table referenced as both `${SRC_DB}.X` and `DB_SRCD2.X` collapses to one."""
+    refs, seen = [], set()
+
+    def _add(display, table):
+        key = f"{resolve_dataset_for_metadata(display)}.{table}".lower()
+        if key not in seen:
+            seen.add(key)
+            refs.append((display, table))
+
+    for dataset, table in re.findall(r'\$\{([A-Za-z0-9_]+)\}\.([A-Za-z0-9_]+)', sql_query):
+        _add(f"${{{dataset}}}", table)
+    for dataset, table in re.findall(r'\b([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\b', sql_query):
+        if _is_known_dataset(dataset):
+            _add(dataset, table)
+    return refs
+
+
 def extract_tables_and_metadata(sql_query):
     schema_explorer_data = {}
-    
-    matches_param = re.findall(r'\$\{([A-Za-z0-9_]+)\}\.([A-Za-z0-9_]+)', sql_query)
-    matches_raw = re.findall(r'\b([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\b', sql_query)
-    
-    table_matches = []
-    for dataset, table in matches_param:
-        table_matches.append((f"${{{dataset}}}", table))
-        
-    for dataset, table in matches_raw:
-        if dataset.isdigit() and table.isdigit():
-            continue
-        table_matches.append((dataset, table))
-
-    processed_tables = set()
-    for dataset, table in table_matches:
+    for dataset, table in _extract_table_refs(sql_query):
         resolved_dataset = resolve_dataset_for_metadata(dataset)
-        table_key = f"{resolved_dataset}.{table}"
-        if table_key in processed_tables:
-            continue
-            
-        try:
-            table_ref = bq_client.get_table(f"{bq_client.project}.{resolved_dataset}.{table}")
-            schema_explorer_data[f"{dataset}.{table}"] = [
-                {"name": f.name, "type": f.field_type, "mode": f.mode} for f in table_ref.schema
-            ]
-            processed_tables.add(table_key)
-        except Exception:
-            # Generic: NO hardcoded fallback schema. If the table can't be read live,
-            # record it with no columns so downstream steps simply skip schema-based fixes
-            # for it (rather than guessing fake columns).
-            schema_explorer_data[f"{dataset}.{table}"] = []
-            processed_tables.add(table_key)
-
+        # Cached live fetch; [] when unreadable (no hardcoded fallback schema).
+        schema_explorer_data[f"{dataset}.{table}"] = get_table_columns_cached(resolved_dataset, table)
     return schema_explorer_data
 
 def parse_python_tasks(py_content):
@@ -326,35 +526,12 @@ def parse_python_tasks(py_content):
 
 def inject_live_schema_context(sql_query):
     schema_context = "--- LIVE BIGQUERY SCHEMA METADATA ---\n"
-    
-    matches_param = re.findall(r'\$\{([A-Za-z0-9_]+)\}\.([A-Za-z0-9_]+)', sql_query)
-    matches_raw = re.findall(r'\b([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\b', sql_query)
-    
-    table_matches = []
-    for dataset, table in matches_param:
-        table_matches.append((f"${{{dataset}}}", table))
-    for dataset, table in matches_raw:
-        if dataset.isdigit() and table.isdigit():
-            continue
-        table_matches.append((dataset, table))
-    
-    processed_tables = set()
-    for dataset, table in table_matches:
+    for dataset, table in _extract_table_refs(sql_query):
         resolved_dataset = resolve_dataset_for_metadata(dataset)
-        table_key = f"{resolved_dataset}.{table}"
-        
-        if table_key in processed_tables:
-            continue
-            
-        try:
-            table_ref = bq_client.get_table(f"{bq_client.project}.{resolved_dataset}.{table}")
-            fields_desc = [f"  - {f.name} ({f.field_type})" for f in table_ref.schema]
+        cols = get_table_columns_cached(resolved_dataset, table)  # cached live fetch
+        if cols:
+            fields_desc = [f"  - {c['name']} ({c['type']})" for c in cols]
             schema_context += f"Table: {dataset}.{table} structure columns:\n" + "\n".join(fields_desc) + "\n"
-            processed_tables.add(table_key)
-        except Exception:
-            # Generic: no live schema available for this table → skip it (no fake columns).
-            processed_tables.add(table_key)
-
     return schema_context if "  - " in schema_context else ""
 
 def perform_bq_dry_run(sql_query):
@@ -422,9 +599,16 @@ def extract_refactored_code(markdown_text):
         return match.group(1).strip()
     return code_section.replace('```', '').strip()
 
-def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_schema="", bq_error=""):
+def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_schema="", bq_error="",
+                            resolve_placeholders=False, advisory_only=False, max_output_tokens=None, model=None):
     # NOTE: the decision to call this function (optimization vs. skip) is made by the caller
     # (/process_file). This function always performs a real AI call.
+    # bq_error: a residual syntax/validation error the linter could not fix (SQL dry-run or
+    #           Python compile) — the AI's PRIMARY job becomes repairing it.
+    # resolve_placeholders: the linter left structural placeholders (col1.., TODO) the AI
+    #           should fill using the LIVE SCHEMA (but NEVER invent a DELETE/UPDATE filter).
+    # advisory_only: file too large for a safe full rewrite — return line-referenced notes only.
+    # max_output_tokens: caller-sized output budget so long files aren't truncated mid-rewrite.
     code_lines = pre_cleaned_code.split('\n')
     numbered_code = '\n'.join([f"{i+1:03d} | {line}" for i, line in enumerate(code_lines)])
 
@@ -450,9 +634,23 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_sc
     ⚠️ HIGHEST PRIORITY — THE CODE CURRENTLY FAILS BIGQUERY VALIDATION:
     {bq_error}
     Your PRIMARY task is to FIX this error so the query is valid BigQuery Standard SQL, while preserving the original intent.
-    Common causes: a stray semicolon splitting one statement into two, an invalid identifier (e.g. an unquoted column name with a space), or a dangling `AND`/`OR`.
+    Common causes: a stray semicolon splitting one statement into two, a MISSING semicolon between two statements,
+    a MISSING closing quote on a string literal, an invalid identifier (e.g. an unquoted column name with a space),
+    a CURRENT_DATETIME()/CURRENT_DATE() value whose type does not match the target column, or a dangling `AND`/`OR`.
     In the "Advanced Optimizations" section, explain the root cause and your fix. Then output the corrected, valid query under "Final Refactored Code".
     Do NOT output "No advanced architectural bottlenecks detected." — there is a real error that must be fixed.
+    """
+        elif resolve_placeholders:
+            syntax_fix_directive = """
+    ⚠️ HIGHEST PRIORITY — THE LINTER LEFT STRUCTURAL PLACEHOLDERS THAT MUST BE RESOLVED:
+    - Replace any generated `(col1, col2, ...)` target column list with the REAL column names, in order, taken
+      ONLY from the LIVE SCHEMA below. If the schema is unavailable, keep the list and say so — never invent names.
+    - Ensure every value's type matches its target column (e.g. a DATE column must not receive CURRENT_DATETIME()).
+    - Fix any remaining syntax issue (missing comma/semicolon/closing quote) so the statement is valid BigQuery SQL.
+    - DO NOT invent a filter for a `<MISSING_FILTER_REQUIRED>` DELETE/UPDATE and DO NOT guess a `<JOIN_CONDITION_REQUIRED>`
+      key that the schema does not clearly support — leave those placeholders for a human.
+    Explain what you resolved under "Advanced Optimizations", then output the corrected query under "Final Refactored Code".
+    Do NOT output "No advanced architectural bottlenecks detected." — there is real work to do.
     """
         domain_rules = f"""
     SQL DIALECT: Google BigQuery Standard SQL. All recommendations MUST be valid BigQuery SQL.
@@ -483,8 +681,18 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_sc
     """
         rules_file = 'rules_sql.txt'
     elif fn.endswith('.py'):
-        domain_rules = """
+        py_fix_directive = ""
+        if bq_error:
+            py_fix_directive = f"""
+    ⚠️ HIGHEST PRIORITY — THE CODE DOES NOT PARSE AS VALID PYTHON:
+    {bq_error}
+    Your PRIMARY task is to FIX this so the module imports cleanly (correct indentation, balanced brackets/quotes),
+    while preserving behavior. Output the corrected, valid module under "Final Refactored Code".
+    Do NOT output "No advanced architectural bottlenecks detected." — there is a real error that must be fixed.
+    """
+        domain_rules = f"""
     LANGUAGE: Python (typically Apache Airflow DAGs / data-pipeline code).
+    {py_fix_directive}
     Preserve behavior. ONLY look for: DAG structure & scheduling, idempotency, task dependency/parallelism,
     error handling/retries, resource use, and readability/maintainability. Do not restate linter fixes.
     """
@@ -502,42 +710,111 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_sc
 
     specific_instructions = load_rules_from_file(os.path.join(base_dir, rules_file)) if rules_file else ""
 
-    output_format = """
+    if advisory_only:
+        # Large file: a full rewrite would not fit one response (and a half-emitted file looks
+        # like deleted code). Ask for line-referenced advice ONLY — no code block.
+        output_format = """
+    This file is LARGE. Do NOT output a full rewrite. Under a single heading, give specific,
+    line-referenced findings (use the NNN | line numbers) the developer can apply by hand.
+
+    ### 💡 Advanced Optimizations
+    (All findings here, each citing the line number(s) it applies to. Do NOT emit a code block.)
+    """
+    else:
+        output_format = """
     Format your output strictly with these two headings:
 
     ### 💡 Advanced Optimizations
     (Place ALL your explanations, reasoning, and context here.)
 
     ### 🛠️ Final Refactored Code
-    (Output ONLY the raw code block here. Do NOT place any conversational text under this heading. Start immediately with ```)
+    (Output the COMPLETE corrected file as ONE raw code block — every line, start to finish, nothing
+    omitted or abbreviated with "..." . Do NOT place any conversational text under this heading. Start immediately with ```)
     """
 
     prompt = (f"{common_header}\n{domain_rules}\n{specific_instructions}\n{output_format}\n"
               f"Code to review:\n```\n{numbered_code}\n```")
 
-    # Token-frugal call (thinking disabled, low temperature, capped output).
-    return generate_ai(prompt)
+    # Output budget = room for the FULL rewrite (code) PLUS the explanation. A too-small cap is
+    # what truncated the code block after long notes, so we budget generously (x3 + 4096 headroom);
+    # it is only a ceiling — you pay for tokens actually generated, not the cap. Clamped in generate_ai.
+    budget = max_output_tokens or min(AI_MAX_OUTPUT_TOKENS, _estimate_tokens(pre_cleaned_code) * 3 + 4096)
+    return generate_ai(prompt, max_output_tokens=budget, model=model)
+
+def _read_first(*relpaths):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    for rel in relpaths:
+        path = os.path.join(base_dir, rel)
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                return f.read()
+    return None
+
 
 @app.route('/', methods=['GET'])
 def home():
-    # Serve index.html whether it sits next to this module or inside templates/.
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    for candidate in (
-        os.path.join(base_dir, 'index.html'),
-        os.path.join(base_dir, 'templates', 'index.html'),
-    ):
-        if os.path.exists(candidate):
-            with open(candidate, 'r', encoding='utf-8') as f:
-                return f.read()
-    return "index.html not found on server.", 500
+    # Gate the app behind Google sign-in ONLY when auth is enabled (a client ID is configured).
+    if AUTH_ENABLED and not session.get('user_email'):
+        login_html = _read_first('login.html', os.path.join('templates', 'login.html'))
+        if login_html is None:
+            return "login.html not found on server.", 500
+        return login_html.replace('{{GOOGLE_CLIENT_ID}}', GOOGLE_OAUTH_CLIENT_ID)
+    index_html = _read_first('index.html', os.path.join('templates', 'index.html'))
+    if index_html is None:
+        return "index.html not found on server.", 500
+    return index_html
+
+
+@app.route('/auth/google', methods=['POST'])
+def auth_google():
+    """Verify a Google Identity Services ID token and open a session."""
+    if not GOOGLE_OAUTH_CLIENT_ID:
+        return jsonify({"error": "Server is missing GOOGLE_OAUTH_CLIENT_ID configuration."}), 500
+    token = (request.get_json(silent=True) or {}).get('credential')
+    if not token:
+        return jsonify({"error": "Missing Google credential."}), 400
+    try:
+        info = google_id_token.verify_oauth2_token(token, google_auth_requests.Request(), GOOGLE_OAUTH_CLIENT_ID)
+    except Exception:
+        return jsonify({"error": "Invalid or expired Google credential."}), 401
+    if info.get('iss') not in ('accounts.google.com', 'https://accounts.google.com'):
+        return jsonify({"error": "Invalid token issuer."}), 401
+    if not info.get('email_verified', False):
+        return jsonify({"error": "Your Google email is not verified."}), 403
+    email = (info.get('email') or '').lower()
+    if ALLOWED_EMAIL_DOMAIN and not email.endswith('@' + ALLOWED_EMAIL_DOMAIN):
+        return jsonify({"error": f"Access is restricted to @{ALLOWED_EMAIL_DOMAIN} accounts."}), 403
+    session.permanent = True
+    session['user_email'] = info.get('email')
+    session['user_name'] = info.get('name', '')
+    session['user_picture'] = info.get('picture', '')
+    return jsonify({"ok": True, "email": session['user_email'], "name": session['user_name']}), 200
+
+
+@app.route('/auth/logout', methods=['GET', 'POST'])
+def auth_logout():
+    session.clear()
+    if request.method == 'GET':
+        return redirect('/')
+    return jsonify({"ok": True}), 200
+
+
+@app.route('/auth/status', methods=['GET'])
+def auth_status():
+    if session.get('user_email'):
+        return jsonify({"authenticated": True, "auth_enabled": AUTH_ENABLED, "email": session.get('user_email'),
+                        "name": session.get('user_name', ''), "picture": session.get('user_picture', '')}), 200
+    return jsonify({"authenticated": False, "auth_enabled": AUTH_ENABLED}), 200
+
 
 @app.route('/prepare', methods=['POST'])
+@login_required
 def prepare_review():
     data = request.get_json()
     repo = data.get('repo')
     head_branch = data.get('branch')
     base_branch = data.get('base_branch', 'main')
-    github_token = os.environ.get("GITHUB_TOKEN")
+    github_token = load_secret("GITHUB_TOKEN")
     
     if not repo or not head_branch:
         return jsonify({"error": "Missing parameters."}), 400
@@ -574,21 +851,10 @@ def prepare_review():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/process_file', methods=['POST'])
-def process_single_file():
-    data = request.get_json()
-    filename = data.get('filename')
-    content = data.get('content')
-    repo_context = data.get('repo_context', 'No additional context.')
-    repo_name = data.get('repo_name', 'unknown')
-    # 'full' = review the whole file; 'diff' = review only the changed lines (feature vs main).
-    scope = (data.get('scope') or 'full').lower()
-
-    user_email = get_user_identity()
-    
-    if not filename or not content:
-        return jsonify({"error": "Missing file data."}), 400
-
+def review_one_file(filename, content, scope='full', repo_context='No additional context.',
+                    repo_name='unknown', user_email='unknown-user@company.com', model=None):
+    """Core review pipeline for a single file. Returns the result dict (same shape the
+    /process_file route returns). Reused by both the web UI and the CI/PR endpoint."""
     try:
         start_time = time.time()
 
@@ -617,7 +883,10 @@ def process_single_file():
             finops_status = "SECURITY_HALT"
         else:
             live_schema = inject_live_schema_context(pre_cleaned_code) if filename.endswith('.sql') else ""
-            structured_metadata = schema_meta  # reuse the schema already fetched for the linter
+            # Schema explorer reflects the LINTED code (fully parameterized, de-duplicated,
+            # alias-free) — never the original — so it can't show a raw dataset beside its
+            # ${VAR} form or list a table-alias.column as a table. Re-extraction hits the cache.
+            structured_metadata = extract_tables_and_metadata(pre_cleaned_code) if filename.endswith('.sql') else {}
             py_analysis = parse_python_tasks(pre_cleaned_code) if filename.endswith('.py') else {}
 
             # Deterministically detect a window function that has ORDER BY but no PARTITION BY,
@@ -645,7 +914,7 @@ def process_single_file():
                 }
                 finops_status = "DIFF_SCOPE"
             elif filename.endswith('.sql'):
-                has_placeholders = any(x in pre_cleaned_code for x in ["<MISSING_FILTER_REQUIRED>", "<JOIN_CONDITION_REQUIRED>", "(col1, col2, col3)", "TODO"])
+                has_placeholders = _has_structural_placeholders(pre_cleaned_code)
 
                 if has_placeholders:
                     bq_metrics = {
@@ -668,47 +937,122 @@ def process_single_file():
                         bq_metrics["message"] = f"⚠️ FINOPS BLOCKED: Query structural plan consumes {bq_bytes / (1024**3):.2f} GB, exceeding environment maximum limit."
                         local_linter_issues.append("FinOps Exception: Execution plan exceeds maximum organizational compute thresholds.")
 
-            # Step 2b: the deterministic linter + schema pass + BQ dry-run have already CAPTURED
-            # every issue that can be found mechanically (parameterization, datatype/quoting,
-            # placeholders, and any remaining syntax error reported by the dry-run). The AI is now
-            # reserved EXCLUSIVELY for genuine optimization of complex SQL — it is no longer spent
-            # trying to fix syntax errors, which saves a large number of tokens.
-            if needs_ai_review(filename, pre_cleaned_code):
-                ai_response_obj = review_code_with_gemini(filename, pre_cleaned_code, repo_context, live_schema, sql_syntax_error_msg)
+            # Python: surface a syntax error that survived the linter so the AI is asked to fix
+            # it (the deterministic reindenter only adopts a fix that compiles; whatever it could
+            # not repair is escalated here — mirroring the SQL bq_error path).
+            py_syntax_error_msg = ""
+            if filename.endswith('.py'):
+                try:
+                    compile(pre_cleaned_code, filename, 'exec')
+                except SyntaxError as e:
+                    py_syntax_error_msg = f"Python syntax error: {e.msg} (line {e.lineno})."
+                    if not any("syntax" in str(i).lower() for i in local_linter_issues):
+                        local_linter_issues.append(f"Critical: {py_syntax_error_msg} The AI was asked to repair it (see the ✨ AI Optimized tab).")
+
+            # Step 2b: ESCALATION POLICY. The AI runs when a file has genuine optimization scope
+            # OR when the linter could NOT fully resolve it — a residual syntax error, or structural
+            # placeholders left for resolution. In every one of those cases the AI is handed the FULL
+            # domain rules (rules_sql/py/ksh) so it re-checks the code against all of them, instead of
+            # the file silently passing through with unresolved issues. (Secrets already halted above.)
+            # Escalate to AI for a residual SYNTAX error, or for placeholders the AI can actually
+            # resolve from the schema (generated column lists) — NOT for human-only stubs. A
+            # missing-ON join still reaches the AI via needs_ai_review (the 'JOIN' signal).
+            sql_unresolved = filename.endswith('.sql') and (bool(sql_syntax_error_msg) or _has_ai_resolvable_placeholders(pre_cleaned_code))
+            must_fix_note = sql_syntax_error_msg or py_syntax_error_msg
+            # A file blocked on a HUMAN decision (missing DELETE/UPDATE filter or join key) is
+            # CRITICAL and not runnable — the linter already flagged it, so we spend NO AI on it
+            # (don't pay tokens to re-state a deterministic check, and don't optimize a blocked
+            # query). It re-evaluates on the next scan once the human fills the stub in.
+            human_blocked = filename.endswith('.sql') and _has_human_required_placeholders(pre_cleaned_code)
+            should_use_ai = (not human_blocked) and (
+                             needs_ai_review(filename, pre_cleaned_code)
+                             or sql_unresolved
+                             or bool(py_syntax_error_msg))
+
+            if should_use_ai:
+                ext = filename.rsplit('.', 1)[-1].lower()
+                # Big files can't be fully re-emitted in one response, so we ask for advice ONLY
+                # (no rewrite) past a line threshold — that's what prevents a half-written file
+                # from showing up as "deleted" code in the diff.
+                line_count = pre_cleaned_code.count('\n') + 1
+                advisory_only = line_count > AI_FULL_REWRITE_MAX_LINES
+                ai_response_obj = review_code_with_gemini(
+                    filename, pre_cleaned_code, repo_context, live_schema,
+                    bq_error=must_fix_note,
+                    resolve_placeholders=(sql_unresolved and not sql_syntax_error_msg),
+                    advisory_only=advisory_only, model=model)
                 raw_ai_markdown = ai_response_obj.text or ""
                 try:
                     if ai_response_obj.usage_metadata:
                         tokens_used = ai_response_obj.usage_metadata.total_token_count
                 except AttributeError:
                     pass
+                truncated = _response_was_truncated(ai_response_obj)
+
+                if not advisory_only:
+                    suggested_code = extract_refactored_code(raw_ai_markdown)
+                    # RETRY once at the MAX budget if the rewrite came back truncated or empty. The
+                    # file already fits (advisory threshold), so giving the model all the room it needs
+                    # almost always yields the COMPLETE rewrite — this is what keeps the AI tab present
+                    # instead of withholding the fix the user actually needs.
+                    if (truncated or not suggested_code.strip()):
+                        retry_obj = review_code_with_gemini(
+                            filename, pre_cleaned_code, repo_context, live_schema,
+                            bq_error=must_fix_note,
+                            resolve_placeholders=(sql_unresolved and not sql_syntax_error_msg),
+                            max_output_tokens=AI_MAX_OUTPUT_TOKENS, model=model)
+                        retry_md = retry_obj.text or ""
+                        retry_code = extract_refactored_code(retry_md)
+                        try:
+                            if retry_obj.usage_metadata:
+                                tokens_used += retry_obj.usage_metadata.total_token_count
+                        except AttributeError:
+                            pass
+                        if retry_code.strip():
+                            raw_ai_markdown, suggested_code = retry_md, retry_code
+                            truncated = _response_was_truncated(retry_obj)
 
                 # Advisory notes only — do NOT fold the rewrite back into the working code.
                 notes_part = raw_ai_markdown.split("### 🛠️ Final Refactored Code")[0].strip()
                 ai_review_markdown = notes_part or "### 💡 Advanced Optimizations\nSee the AI Optimized tab for the suggested rewrite."
 
-                # Extract the AI's suggested code and guarantee it still passes the linter.
-                suggested_code = extract_refactored_code(raw_ai_markdown)
-                suggested_code, _ = process_file_locally(filename, suggested_code, schema_meta)
+                if advisory_only:
+                    ai_review_markdown += (f"\n\n> ℹ️ This file is large ({line_count} lines); the AI gave "
+                        "line-referenced advice instead of a full rewrite. Apply the points above, or ask the "
+                        "Architect to rewrite a specific section.")
+                else:
+                    # Re-lint the AI's suggestion so it still meets the deterministic rules.
+                    suggested_code, _ = process_file_locally(filename, suggested_code, schema_meta)
 
-                # Surface an AI version only when it actually differs from the linter baseline.
-                if suggested_code.strip() and suggested_code.strip() != pre_cleaned_code.strip():
-                    ai_optimized_code = suggested_code
+                    # Show the rewrite unless it's clearly TRUNCATED (finish_reason MAX_TOKENS, or a
+                    # catastrophic shortfall). A complete-but-shorter refactor IS shown — that's the fix.
+                    safe = (not truncated) and _ai_rewrite_is_safe(pre_cleaned_code, suggested_code, ext)
+                    if suggested_code.strip() and suggested_code.strip() != pre_cleaned_code.strip() and safe:
+                        ai_optimized_code = suggested_code
 
-                    # If the AI was fixing a syntax error, re-validate its suggestion so the
-                    # user can see whether the fix actually passes BigQuery.
-                    if sql_syntax_error_msg and not any(x in suggested_code for x in ["<MISSING_FILTER_REQUIRED>", "<JOIN_CONDITION_REQUIRED>", "(col1, col2, col3)", "TODO"]):
-                        fixed_metrics = perform_bq_dry_run(suggested_code)
-                        if fixed_metrics.get("valid"):
-                            local_linter_issues.append("AI Fix Available: A corrected, BigQuery-valid version is ready in the ✨ AI Optimized tab.")
+                        # If the AI was repairing a syntax error or filling structural placeholders,
+                        # re-validate its suggestion so the user can see whether it now passes BigQuery.
+                        if filename.endswith('.sql') and (sql_syntax_error_msg or sql_unresolved) and not _has_structural_placeholders(suggested_code):
+                            fixed_metrics = perform_bq_dry_run(suggested_code)
+                            if fixed_metrics.get("valid"):
+                                local_linter_issues.append("AI Fix Available: A corrected, BigQuery-valid version is ready in the ✨ AI Optimized tab.")
+                    elif suggested_code.strip() and not safe:
+                        # Still truncated even after the max-budget retry — withhold the partial diff
+                        # but tell the user exactly why and what knob to turn.
+                        ai_review_markdown += ("\n\n> ⚠️ The AI's full rewrite was withheld because it was still "
+                            f"truncated for this file even at the maximum output budget ({AI_MAX_OUTPUT_TOKENS} "
+                            "tokens). Raise `AI_MAX_OUTPUT_TOKENS`, or ask the Architect to rewrite one section at a time.")
             else:
                 is_bypassed = True
-                if sql_syntax_error_msg:
-                    # A real validation error was captured deterministically by the BigQuery dry-run.
-                    # It is shown as an issue in the linter panel; the AI was NOT spent on it.
+                if filename.endswith('.sql') and _has_structural_placeholders(pre_cleaned_code):
+                    # Human-decision placeholder(s) remain (DELETE/UPDATE filter, JOIN key). The
+                    # linter flagged them in the panel; the AI is NOT spent because it must not
+                    # invent a filter/join key — a person has to supply the intent.
                     ai_review_markdown = ("### 💡 Advanced Optimizations\n"
-                        "⚠️ The BigQuery dry-run flagged a validation error (see the Deterministic Linter panel). "
-                        "Resolve it before committing — or ask the Architect in the chat below to rewrite it. "
-                        "The AI optimizer was not spent automatically, to conserve tokens.")
+                        "⚠️ The linter inserted placeholder(s) that need a human decision (e.g. a DELETE/UPDATE "
+                        "filter or a JOIN condition) — see the Deterministic Linter panel. Fill them in, then "
+                        "re-scan, or ask the Architect in the chat to draft one. The AI optimizer was not spent "
+                        "automatically, to conserve tokens.")
                 else:
                     ai_review_markdown = ("### 💡 Advanced Optimizations\n"
                         "✓ No advanced optimization required. The deterministic linter applied all parameterization, "
@@ -728,8 +1072,8 @@ def process_single_file():
         scorecard = calculate_optimization_scores(filename, pre_cleaned_code, len(local_linter_issues))
 
         log_to_bq_analytics(repo_name, filename, filename.split('.')[-1], tokens_used, estimated_cost, is_bypassed, len(local_linter_issues), bq_bytes, has_secrets, user_email, finops_status)
-        
-        return jsonify({
+
+        return {
             "filename": filename,
             "unit_test_fixes": local_linter_issues,
             "ai_review": ai_review_markdown,
@@ -742,15 +1086,120 @@ def process_single_file():
             "user_email": user_email,
             "bq_bytes": bq_bytes,
             "cost": estimated_cost,
+            "finops_status": finops_status,
+            "has_secrets": has_secrets,
             "schema_explorer": structured_metadata,
             "airflow_tasks": py_analysis,
-            "scorecard": scorecard
-        }), 200
+            "scorecard": scorecard,
+            # Which Gemini model actually handled this file (0-token files never call one).
+            "model": (model or GEMINI_MODEL) if tokens_used else None
+        }
 
+    except Exception as e:
+        raise
+
+
+def derive_status(result):
+    """Map a review result to a single bucket (mirrors the web UI taxonomy)."""
+    fixes = [str(x).lower() for x in (result.get("unit_test_fixes") or [])]
+    review = (result.get("ai_review") or "").lower()
+    has_errors = any(("error" in f or "critical" in f or "security" in f) for f in fixes)
+    is_critical = any(re.search(r'critical|security|finops|dangerous|mandatory where', f) for f in fixes) or "security breach" in review
+    if has_errors or "syntax error" in review or "security breach" in review:
+        return "critical" if is_critical else "issues"
+    if "no advanced" in review or "bypassed" in review:
+        return "autofix" if fixes else "clean"
+    return "optimize"
+
+
+@app.route('/process_file', methods=['POST'])
+@login_required
+def process_single_file():
+    data = request.get_json() or {}
+    filename = data.get('filename')
+    content = data.get('content')
+    if not filename or not content:
+        return jsonify({"error": "Missing file data."}), 400
+    try:
+        # UI Flash→Pro toggle: when use_pro is set, this scan uses the higher-quality model.
+        model = GEMINI_PRO_MODEL if data.get('use_pro') else None
+        result = review_one_file(
+            filename, content,
+            scope=(data.get('scope') or 'full').lower(),
+            repo_context=data.get('repo_context', 'No additional context.'),
+            repo_name=data.get('repo_name', 'unknown'),
+            user_email=get_user_identity(),
+            model=model,
+        )
+        return jsonify(result), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/review_pr', methods=['POST'])
+def api_review_pr():
+    """Machine-readable PR review for CI (GitHub Actions). Reviews every changed file
+    between base and head and returns a structured verdict. Protected by an optional
+    API key (set the API_KEY env var and send it as the X-API-Key header)."""
+    api_key = os.environ.get("API_KEY", "").strip()
+    if api_key and request.headers.get("X-API-Key", "") != api_key:
+        return jsonify({"error": "Unauthorized — missing or invalid X-API-Key."}), 401
+
+    data = request.get_json(silent=True) or {}
+    repo = data.get('repo')
+    head_branch = data.get('branch') or data.get('head')
+    base_branch = data.get('base_branch') or data.get('base') or 'main'
+    scope = (data.get('scope') or 'full').lower()
+    # Per-call token wins; otherwise fall back to the server's configured token.
+    github_token = data.get('github_token') or load_secret("GITHUB_TOKEN")
+    if not repo or not head_branch:
+        return jsonify({"error": "Missing 'repo' and/or 'branch'."}), 400
+
+    try:
+        files = get_changed_files(repo, base_branch, head_branch, github_token)
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch changed files: {e}"}), 502
+
+    results, counts = [], {"critical": 0, "issues": 0, "optimize": 0, "autofix": 0, "clean": 0}
+    total_tokens = total_cost = 0.0
+    for f in files:
+        content = (f.get("diff_content") if scope == "diff" else f.get("content")) or f.get("content") or ""
+        try:
+            r = review_one_file(f["filename"], content, scope=scope, repo_context="CI / pull-request review",
+                                repo_name=repo, user_email="ci-bot@github")
+            status = derive_status(r)
+            counts[status] = counts.get(status, 0) + 1
+            total_tokens += r.get("tokens", 0) or 0
+            total_cost += r.get("cost", 0) or 0
+            bqm = r.get("bq_metrics") or {}
+            results.append({
+                "filename": f["filename"],
+                "status": status,
+                "issues": r.get("unit_test_fixes", []),
+                "bq_valid": bqm.get("valid"),
+                "bq_message": bqm.get("message"),
+                "tokens": r.get("tokens", 0),
+                "has_ai_suggestion": bool(r.get("ai_optimized_code")),
+                "linter_code": r.get("linter_code", ""),
+                "ai_optimized_code": r.get("ai_optimized_code", ""),
+            })
+        except Exception as e:
+            counts["issues"] += 1
+            results.append({"filename": f["filename"], "status": "error", "issues": [f"Processing error: {e}"]})
+
+    blocked = counts.get("critical", 0) > 0
+    summary = (f"{len(files)} file(s): {counts['critical']} critical · {counts['issues']} issues · "
+               f"{counts['optimize']} optimize · {counts['autofix']} auto-fixed · {counts['clean']} clean")
+    return jsonify({
+        "repo": repo, "base": base_branch, "head": head_branch, "scope": scope,
+        "verdict": "block" if blocked else "pass",
+        "summary": summary, "counts": counts,
+        "total_tokens": int(total_tokens), "estimated_cost": round(total_cost, 6),
+        "files": results,
+    }), 200
+
+
 @app.route('/generate_mock_data', methods=['POST'])
+@login_required
 def generate_mock_data():
     data = request.get_json()
     code = data.get('code')
@@ -779,6 +1228,7 @@ def generate_mock_data():
         ]), 200
 
 @app.route('/get_audit_history', methods=['GET'])
+@login_required
 def get_audit_history():
     try:
         query = f"""
@@ -814,6 +1264,7 @@ def get_audit_history():
         ]), 200
 
 @app.route('/validate_bq', methods=['POST'])
+@login_required
 def validate_bq_route():
     data = request.get_json()
     code = data.get('code')
@@ -838,9 +1289,10 @@ def validate_bq_route():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/commit', methods=['POST'])
+@login_required
 def commit_to_github():
     data = request.get_json()
-    repo_name, branch, filename, new_content, token = data.get('repo'), data.get('branch'), data.get('filename'), data.get('code'), os.environ.get("GITHUB_TOKEN")
+    repo_name, branch, filename, new_content, token = data.get('repo'), data.get('branch'), data.get('filename'), data.get('code'), load_secret("GITHUB_TOKEN")
     if not all([repo_name, branch, filename, new_content, token]): return jsonify({"error": "Missing parameters or GITHUB_TOKEN."}), 400
 
     try:
@@ -853,10 +1305,26 @@ def commit_to_github():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/chat', methods=['POST'])
+@login_required
 def chat_with_code():
     data = request.get_json()
     filename, code_context, user_message = data.get('filename'), data.get('code'), data.get('message')
     if not filename or not user_message: return jsonify({"error": "Missing parameters."}), 400
+
+    # Schema-aware chat: hand the Architect the LIVE columns so it can verify any column the
+    # developer mentions actually exists — and suggest the closest real name when it doesn't,
+    # instead of inventing one. (Only meaningful for SQL against known datasets.)
+    live_schema = inject_live_schema_context(code_context or "") if filename.endswith('.sql') else ""
+    schema_block = ""
+    if filename.endswith('.sql'):
+        schema_block = f"""
+    LIVE BIGQUERY SCHEMA (the ONLY real tables/columns — treat this as ground truth):
+    {live_schema or '(no live schema available — do not guess column names)'}
+
+    COLUMN-EXISTENCE RULE: if the developer asks to add/use/filter a column, FIRST confirm it
+    exists in the live schema above. If it does NOT exist, do NOT invent it — say it's missing and
+    list the closest real column name(s) from the schema so they can pick the right one.
+    """
 
     prompt = f"""
     You are a Google Cloud BigQuery Senior Architect.
@@ -865,18 +1333,23 @@ def chat_with_code():
     ```
     {code_context}
     ```
+    {schema_block}
     User Request: "{user_message}"
-    
-    If edits are requested, generate the full corrected content.
+
+    If edits are requested, generate the COMPLETE corrected content — every line, nothing omitted.
     Format your response strictly with these two headings:
     ### 💡 AI Reply
-    (Your feedback here)
+    (Your feedback here. If a requested column is missing, name the closest real columns.)
     ### 🛠️ Final Refactored Code
     (Markdown block start here with ```)
     """
 
     try:
-        response = generate_ai(prompt)
+        # Budget the output to the code size so long files come back whole, not truncated.
+        chat_model = GEMINI_PRO_MODEL if data.get('use_pro') else None
+        response = generate_ai(prompt, max_output_tokens=min(AI_MAX_OUTPUT_TOKENS,
+                                                             _estimate_tokens(code_context or "") * 2 + 1024),
+                               model=chat_model)
         tokens_used = 0
         try:
             if response.usage_metadata:
