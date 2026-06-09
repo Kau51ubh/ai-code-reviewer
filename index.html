@@ -67,6 +67,27 @@
         .markdown-body p code, .markdown-body li code { background-color: #f1f5f9; color: #ea580c; border: 1px solid #e2e8f0; padding: 0.15rem 0.4rem; border-radius: 0.375rem; font-family: 'Fira Code', monospace; font-size: 0.85em; }
         .dark .markdown-body p code, .dark .markdown-body li code { background-color: #1e293b; border-color: #334155; }
         .markdown-body pre { background-color: #0f172a; border-radius: 0.75rem; padding: 1.5rem; margin-bottom: 2rem; overflow-x: auto; border: 1px solid #1e293b; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+        /* Lightweight, immediate hover tooltip for icon-only buttons: add data-tip="..." */
+        [data-tip] { position: relative; }
+        [data-tip]:hover::after {
+            content: attr(data-tip);
+            position: absolute; left: 50%; top: calc(100% + 8px); transform: translateX(-50%);
+            background: #0f172a; color: #fff; font-size: 11px; font-weight: 600; line-height: 1.35;
+            letter-spacing: normal; text-transform: none; padding: 6px 9px; border-radius: 7px;
+            width: max-content; max-width: 220px; white-space: normal; text-align: center;
+            z-index: 70; box-shadow: 0 6px 16px rgba(0,0,0,0.2); pointer-events: none;
+        }
+        [data-tip]:hover::before {
+            content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
+            border: 5px solid transparent; border-bottom-color: #0f172a; z-index: 70; pointer-events: none;
+        }
+        /* Maximize / minimize the code panel */
+        .code-maximized { position: fixed !important; inset: 12px !important; z-index: 9998 !important; margin: 0 !important;
+            display: flex !important; flex-direction: column; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.45); }
+        .code-maximized .code-view { height: auto !important; flex: 1 1 auto; min-height: 0; }
+        .maxbtn .icon-min { display: none; }
+        .code-maximized .maxbtn .icon-max { display: none; }
+        .code-maximized .maxbtn .icon-min { display: inline; }
         .loader-ring { width: 64px; height: 64px; position: relative; margin: 0 auto; }
         .loader-ring div { box-sizing: border-box; display: block; position: absolute; width: 54px; height: 54px; margin: 5px; border: 4px solid transparent; border-radius: 50%; animation: loader-ring 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite; border-color: #3b82f6 transparent transparent transparent; }
         .loader-ring div:nth-child(1) { animation-delay: -0.45s; }
@@ -259,10 +280,14 @@
                 <button onclick="toggleAuditDrawer(true)" class="flex items-center gap-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 px-3.5 py-1.5 rounded-lg border border-emerald-200 dark:border-emerald-900/30 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-950 transition-colors cursor-pointer">
                     🔍 View Audit Trail
                 </button>
-                <div class="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-full border border-slate-200 dark:border-slate-700">
+                <div class="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 pl-1 pr-2 py-1 rounded-full border border-slate-200 dark:border-slate-700">
+                    <img id="user-badge-photo" src="" alt="" class="w-6 h-6 rounded-full object-cover shrink-0" style="display:none;">
                     <div class="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs font-bold shrink-0" id="user-badge-initial">U</div>
-                    <span class="text-xs font-semibold text-slate-600 dark:text-slate-300 pr-2 truncate max-w-[120px] md:max-w-[150px] cursor-help" id="user-badge-email" title="Authentication Pending...">Authentication Pending...</span>
+                    <span class="text-xs font-semibold text-slate-600 dark:text-slate-300 truncate max-w-[120px] md:max-w-[150px] cursor-help" id="user-badge-email" title="Authentication Pending...">Authentication Pending...</span>
                 </div>
+                <button id="logoutBtn" onclick="logout()" title="Sign out" style="display:none;" class="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400 transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/40 cursor-pointer">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                </button>
                 <button onclick="toggleDarkMode()" class="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 transition-colors hover:bg-slate-200 dark:hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer">
                     🌙 / ☀️
                 </button>
@@ -508,11 +533,56 @@
             return { display: email, initial: (name[0] || 'U').toUpperCase(), title: email };
         }
 
+        // --- Authentication / session ---
+        // Any API call that returns 401 means the session expired → bounce to the login page.
+        (function () {
+            const _fetch = window.fetch;
+            window.fetch = function (...args) {
+                return _fetch.apply(this, args).then(resp => {
+                    if (resp.status === 401) { window.location.href = '/'; }
+                    return resp;
+                });
+            };
+        })();
+
+        async function logout() {
+            try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) {}
+            window.location.href = '/';
+        }
+
+        // Populate the header identity badge from the signed-in session on load.
+        async function loadSessionUser() {
+            try {
+                const r = await fetch('/auth/status');
+                const s = await r.json();
+                // Auth disabled (no OAuth client configured) → run ungated, no redirect, hide logout.
+                if (!s.auth_enabled) {
+                    const emailEl = document.getElementById('user-badge-email');
+                    emailEl.innerText = 'Sign-in disabled';
+                    emailEl.title = 'Auth is off — set GOOGLE_OAUTH_CLIENT_ID to require sign-in';
+                    return;
+                }
+                if (!s.authenticated) { window.location.href = '/'; return; }
+                const logoutBtn = document.getElementById('logoutBtn');
+                if (logoutBtn) logoutBtn.style.display = 'flex';
+                const u = formatUserIdentity(s.email);
+                const emailEl = document.getElementById('user-badge-email');
+                emailEl.innerText = s.name || u.display;
+                emailEl.title = s.email;
+                const photoEl = document.getElementById('user-badge-photo');
+                const initEl = document.getElementById('user-badge-initial');
+                if (s.picture) { photoEl.src = s.picture; photoEl.style.display = 'block'; initEl.style.display = 'none'; }
+                else { initEl.innerText = u.initial; }
+            } catch (e) { /* leave default badge */ }
+        }
+        document.addEventListener('DOMContentLoaded', loadSessionUser);
+
         // --- Core Application Logic & Modals ---
 
         function toggleDarkMode() {
             document.documentElement.classList.toggle('dark');
             const isDark = document.documentElement.classList.contains('dark');
+            try { localStorage.setItem('aicr_theme', isDark ? 'dark' : 'light'); } catch (e) {}
             if(window.monacoEditors) {
                 Object.values(window.monacoEditors).forEach(editor => {
                     monaco.editor.setTheme(isDark ? 'vs-dark' : 'vs-light');
@@ -524,6 +594,17 @@
                 });
             }
         }
+
+        // Restore the saved theme on load (falls back to the OS preference the first time).
+        (function applySavedTheme() {
+            try {
+                const saved = localStorage.getItem('aicr_theme');
+                const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+                if (saved === 'dark' || (saved === null && prefersDark)) {
+                    document.documentElement.classList.add('dark');
+                }
+            } catch (e) {}
+        })();
 
         async function toggleAuditDrawer(show) {
             const drawer = document.getElementById('auditDrawer');
@@ -942,6 +1023,50 @@
             document.getElementById('scorecardModal').style.display = 'none';
         }
 
+        // ---- Re-scan a single file (re-runs just this file through /process_file) ----
+        window.rescanFile = async function(safeId) {
+            const data = window.fileDataStore[safeId];
+            if (!data) return;
+            const btn = document.getElementById('rescan-' + safeId);
+            if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'wait';
+                btn.innerHTML = '<span class="inline-block w-[18px] h-[18px] border-2 border-slate-400 border-t-transparent rounded-full animate-spin"></span>'; }
+            try {
+                const payload = {
+                    filename: data.filename,
+                    content: data.originalCode || data.pureRefactoredCode || '',
+                    scope: data.isDiff ? 'diff' : 'full',
+                    repo_context: 'Single-file re-scan',
+                    repo_name: (document.getElementById('repo') || {}).value || 'unknown',
+                    use_pro: !!window.useProModel
+                };
+                const res = await fetch(PROCESS_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                if (res.status === 401) { window.location.href = '/'; return; }
+                const fileResult = await res.json();
+                if (!res.ok) throw new Error(fileResult.error || ('Server returned ' + res.status));
+                fileResult._cached = false;
+                fileResult.patch = data.patch || '';
+                fileResult.review_scope = data.isDiff ? 'diff' : 'full';
+
+                // Drop the old sidebar entry, cached payload, and Monaco editors for this file.
+                const oldNav = document.getElementById('nav-' + safeId);
+                if (oldNav) oldNav.remove();
+                ['monacoEditors', 'monacoDiffEditors'].forEach(store => {
+                    if (window[store]) [safeId, safeId + '-opt'].forEach(k => {
+                        if (window[store][k]) { try { window[store][k].dispose(); } catch (e) {} delete window[store][k]; }
+                    });
+                });
+                delete window.fileDataStore[safeId];
+                delete renderedFilePayloads[safeId];
+
+                renderSingleFile(fileResult, true); // re-render + activate this file
+                showToast('Re-scanned ' + data.filename, 'success');
+            } catch (err) {
+                showToast('Re-scan failed: ' + err.message, 'error');
+                if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = 'pointer';
+                    btn.innerHTML = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg> Re-scan'; }
+            }
+        };
+
         // ---- Run Summary (metrics) popup ----
         window.closeMetricsModal = function() {
             document.getElementById('metricsModal').style.display = 'none';
@@ -1153,7 +1278,7 @@
                 const files = prepData.files;
                 if(!files || files.length === 0) throw new Error("No valid files found to review.");
 
-                let actualTokens = 0, actualTime = 0, totalBytes = 0, totalCost = 0, aiFileCount = 0;
+                let actualTokens = 0, actualTime = 0, totalBytes = 0, totalCost = 0, aiFileCount = 0, errorCount = 0;
 
                 document.getElementById('sidebar-list').innerHTML = '';
                 renderedFilePayloads = {};
@@ -1224,12 +1349,33 @@
                         sha: currentFile.sha,
                         scope: diffRun ? 'diff' : 'full',
                         repo_context: `The following files are also part of this PR context: ${repoContextStr}`,
-                        repo_name: repoVal
+                        repo_name: repoVal,
+                        use_pro: !!window.useProModel
                     };
 
-                    const processResponse = await fetch(PROCESS_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(processPayload) });
-                    const fileResult = await processResponse.json();
-                    if (!processResponse.ok) throw new Error(fileResult.error || `Failed on ${currentFile.filename}`);
+                    // Per-file fault tolerance: one bad file must NOT abort the whole run.
+                    let fileResult;
+                    try {
+                        const processResponse = await fetch(PROCESS_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(processPayload) });
+                        if (processResponse.status === 401) { window.location.href = '/'; return; }
+                        fileResult = await processResponse.json();
+                        if (!processResponse.ok) throw new Error(fileResult.error || `Server returned ${processResponse.status}`);
+                    } catch (err) {
+                        // Render a clear error card for this file and keep going.
+                        errorCount++;
+                        fileResult = {
+                            filename: currentFile.filename,
+                            unit_test_fixes: [`Processing error — this file could not be reviewed: ${err.message}`],
+                            ai_review: `### 💡 Advanced Optimizations\n⚠️ This file could not be processed: ${err.message}`,
+                            linter_code: contentFor(currentFile) || '',
+                            ai_optimized_code: '',
+                            bq_metrics: null,
+                            original_code: contentFor(currentFile) || '',
+                            scorecard: { performance: 0, cost_efficiency: 0, security: 0, compliance: 0 },
+                            tokens: 0, time_taken: 0, bq_bytes: 0, cost: 0,
+                            _error: true
+                        };
+                    }
                     fileResult._cached = false;
                     // Carry the raw git diff (vs base branch) + run mode so the UI can show "what changed".
                     fileResult.patch = currentFile.patch || '';
@@ -1242,8 +1388,8 @@
                     totalCost += fileResult.cost || 0;
                     if ((fileResult.tokens || 0) > 0) aiFileCount++;  // files that actually spent AI tokens
 
-                    // Cache this result against its commit SHA for the next run.
-                    runCache[cacheKey] = { sha: currentFile.sha || '', result: fileResult };
+                    // Cache only successful results (don't cache an error so a re-run retries it).
+                    if (!fileResult._error) runCache[cacheKey] = { sha: currentFile.sha || '', result: fileResult };
 
                     if (processedCount === 1 && fileResult.user_email) {
                         const u = formatUserIdentity(fileResult.user_email);
@@ -1272,6 +1418,9 @@
                 } else {
                     if (skippedCount > 0) {
                         showToast(`Reviewed ${processedCount} changed file(s); skipped ${skippedCount} with no new commits.`, "info");
+                    }
+                    if (errorCount > 0) {
+                        showToast(`${errorCount} file(s) failed to process and are flagged — the rest completed.`, "error");
                     }
                     // Stash this run's totals, reveal the Run Summary trigger, and auto-open the popup.
                     window.__runTotals = {
@@ -1313,7 +1462,7 @@
                 const response = await fetch(CHAT_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filename: fileData.filename, code: currentCode, message: message })
+                    body: JSON.stringify({ filename: fileData.filename, code: currentCode, message: message, use_pro: !!window.useProModel })
                 });
                 
                 const data = await response.json();
@@ -1422,6 +1571,7 @@
                 cached: !!fileResult._cached,
                 patch: fileResult.patch || '',
                 isDiff: fileResult.review_scope === 'diff',
+                tokens: fileResult.tokens || 0,   // AI tokens spent on THIS file (0 = deterministic only)
                 chatHistory: []
             };
 
@@ -1469,6 +1619,10 @@
                 : 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30';
             const scoreChip = `<span title="Lowest quality score" class="text-[0.6rem] font-bold px-1.5 py-0.5 rounded ${scoreColor}">${lowest}</span>`;
 
+            // Per-file AI token spend. 0 (muted) means the file was resolved deterministically — no AI call.
+            const fileTokens = window.fileDataStore[safeId].tokens || 0;
+            const tokenChip = `<span title="AI tokens spent on this file (0 = handled by the deterministic linter, no AI call)" class="text-[0.6rem] font-mono px-1.5 py-0.5 rounded ${fileTokens > 0 ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300' : 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500'}">⚡ ${fileTokens.toLocaleString()} tok</span>`;
+
             const sidebarList = document.getElementById('sidebar-list');
             const sidebarItem = document.createElement('li');
             sidebarItem.className = `sidebar-item p-3 rounded-xl border border-transparent flex flex-col gap-1.5`;
@@ -1479,12 +1633,15 @@
                 <div class="flex items-center justify-between w-full gap-2">
                     <div class="flex items-center gap-2 overflow-hidden">
                         ${iconHtml}
-                        <span class="text-sm font-semibold text-slate-700 dark:text-slate-300 truncate">${filename}</span>
+                        <span title="${filename}" class="text-sm font-semibold text-slate-700 dark:text-slate-300 truncate">${filename}</span>
                     </div>
                     ${scoreChip}
                 </div>
                 <div class="flex items-center justify-between pl-6">
-                    <span class="text-xs text-slate-400 font-mono">${ext.toUpperCase()}</span>
+                    <div class="flex items-center gap-2 overflow-hidden">
+                        <span class="text-xs text-slate-400 font-mono">${ext.toUpperCase()}</span>
+                        ${tokenChip}
+                    </div>
                     ${badgeHtml}
                 </div>
             `;
@@ -1611,31 +1768,45 @@
             // (instead of the AI's "no optimization needed" note, which reads as "all good").
             let actionCallout = '';
             if (data.statusId === 'issues') {
-                // The raw BigQuery dry-run error is already shown in the linter panel — keep its
-                // noisy URL/Job-ID text OUT of the AI Architect Review block. Lead with a real,
-                // human-readable linter finding instead; if the ONLY finding is the dry-run error,
-                // point the user to the panel rather than dumping the raw message here.
+                // Show a banner ONLY for a genuine action item that needs human attention — never an
+                // already-applied "Fix: ..." note (those are listed in the linter panel; repeating one
+                // here as "Action required" is just noise). Pick, in order: a real linter action
+                // (placeholder / mandatory filter / unknown column / security / cost), then the
+                // dry-run's placeholder/validation message, else show nothing.
                 const isBqError = i => /bigquery (engine|validation)|bq syntax error|prettyPrint|unrecognized name|googleapis\.com/i.test(i);
+                const isAction = i => /critical|security|dangerous|finops|mandatory|placeholder|manual update|must |requires|verify|not in .*schema|replace placeholder|halt/i.test(i);
                 const fixes = (data.localFixesArray || []).filter(i => !isBqError(i));
-                let top = fixes.find(i => /critical|security|error|dangerous|finops|mandatory/i.test(i)) || fixes[0];
-                if (!top) top = 'BigQuery validation failed — see the Dry Run details in the Deterministic Linter panel.';
-                const tone = data.isCritical
-                    ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
-                    : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300';
-                actionCallout = `<div class="mb-4 p-3 rounded-lg border ${tone} text-sm font-medium flex items-start gap-2">
-                    <span class="shrink-0">${data.isCritical ? '🛑' : '⚠️'}</span>
-                    <span><strong>${data.isCritical ? 'Action required (critical):' : 'Action required:'}</strong> ${escapeHtml(top)}</span>
-                </div>`;
+                let top = fixes.find(isAction);
+                const bqMsg = (data.bq_metrics && data.bq_metrics.message) || '';
+                if (!top && /placeholder|manual update/i.test(bqMsg)) top = bqMsg;
+                if (!top && data.bq_metrics && data.bq_metrics.valid === false && /error|invalid|not present|unrecognized/i.test(bqMsg))
+                    top = 'BigQuery validation failed — see the Dry Run details in the Deterministic Linter panel.';
+                if (top) {
+                    const tone = data.isCritical
+                        ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'
+                        : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300';
+                    actionCallout = `<div class="mb-4 p-3 rounded-lg border ${tone} text-sm font-medium flex items-start gap-2">
+                        <span class="shrink-0">${data.isCritical ? '🛑' : '⚠️'}</span>
+                        <span><strong>${data.isCritical ? 'Action required (critical):' : 'Action required:'}</strong> ${escapeHtml(top)}</span>
+                    </div>`;
+                }
             }
 
             renderedFilePayloads[safeId] = `
                 <div class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-6 md:p-8 animate-[fadeIn_0.3s_ease-out] w-full min-w-0">
-                    <div class="flex items-center justify-between mb-8 border-b border-slate-100 dark:border-slate-800 pb-4">
-                        <h2 class="text-xl font-mono font-bold text-slate-800 dark:text-white truncate">${data.filename}</h2>
-                        <div class="flex items-center gap-3 shrink-0 pl-2">
-                            ${data.cached ? `<span title="No new commits since the last run — cached result reused (no tokens spent)." class="text-[0.65rem] font-bold px-2.5 py-1 rounded-md uppercase tracking-wider bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 flex items-center gap-1">↺ Cached</span>` : ''}
-                            <button onclick="openScorecardModal('${safeId}')" class="px-3.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-800/50 text-xs font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex items-center gap-1.5 text-slate-700 dark:text-slate-300 shadow-sm uppercase tracking-wider backdrop-blur-sm cursor-pointer">
-                                📊 View Quality Scorecard
+                    <div class="flex items-center justify-between gap-4 mb-8 border-b border-slate-100 dark:border-slate-800 pb-4">
+                        <h2 title="${data.filename}" class="text-xl font-mono font-bold text-slate-800 dark:text-white truncate flex-1 min-w-0">${data.filename}</h2>
+                        <div class="flex items-center gap-2 shrink-0">
+                            ${data.cached ? `<span title="No new commits since the last run — cached result reused (no tokens spent)." class="text-[0.6rem] font-bold px-2 py-1 rounded-md uppercase tracking-wider bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 flex items-center gap-1">↺</span>` : ''}
+                            <button onclick="rescanFile('${safeId}')" id="rescan-${safeId}" data-tip="Re-scan this file" aria-label="Re-scan this file" class="inline-flex items-center justify-center h-9 w-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white transition-colors shadow-sm cursor-pointer">
+                                <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                            </button>
+                            <button onclick="openScorecardModal('${safeId}')" data-tip="View quality scorecard" aria-label="View quality scorecard" class="inline-flex items-center justify-center h-9 w-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white transition-colors shadow-sm cursor-pointer">
+                                <svg class="w-[18px] h-[18px]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                            </button>
+                            <button onclick="toggleProModel()" id="modelToggle-${safeId}" data-tip="AI model for the optimizer & chat. Toggle to Pro for higher-quality (slower, pricier) review, then Re-scan." aria-label="Toggle AI model (Flash or Pro)" class="model-toggle inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border text-xs font-bold transition-colors shadow-sm uppercase tracking-wider cursor-pointer ${window.useProModel ? 'bg-violet-600 text-white border-violet-700' : 'bg-white/60 dark:bg-slate-800/60 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'}">
+                                <span class="model-toggle-dot w-2 h-2 rounded-full ${window.useProModel ? 'bg-white' : 'bg-violet-500'}"></span>
+                                <span class="model-toggle-label">${window.useProModel ? 'Pro' : 'Flash'}</span>
                             </button>
                             ${data.badgeHtml.replace('text-[0.65rem]', 'text-xs px-3 py-1')}
                         </div>
@@ -1667,10 +1838,10 @@
                         </div>
                     </div>
 
-                    <div class="bg-slate-50 dark:bg-[#0f172a] rounded-xl border border-slate-200 dark:border-slate-700 shadow-xl overflow-hidden mb-6 relative">
+                    <div id="codeblock-${safeId}" class="bg-slate-50 dark:bg-[#0f172a] rounded-xl border border-slate-200 dark:border-slate-700 shadow-xl overflow-hidden mb-6 relative">
                         <div class="bg-white/80 dark:bg-[#1e293b] px-4 py-2.5 flex items-center justify-between border-b border-slate-200 dark:border-slate-700/50 backdrop-blur-md">
-                            <div class="flex gap-2 items-center">
-                                <div class="flex gap-2 mr-4"><div class="w-3 h-3 rounded-full bg-[#ff5f56]"></div><div class="w-3 h-3 rounded-full bg-[#ffbd2e]"></div><div class="w-3 h-3 rounded-full bg-[#27c93f]"></div></div>
+                            <div class="flex gap-2 items-center min-w-0">
+                                <div class="flex gap-2 mr-4 shrink-0"><div class="w-3 h-3 rounded-full bg-[#ff5f56]"></div><div class="w-3 h-3 rounded-full bg-[#ffbd2e]"></div><div class="w-3 h-3 rounded-full bg-[#27c93f]"></div></div>
                                 <div class="flex bg-slate-100 dark:bg-slate-800/50 rounded-md p-0.5 border border-slate-200 dark:border-slate-700">
                                     <button onclick="switchCodeView('${safeId}', 'refactored')" id="btn-${safeId}-refactored" class="text-[0.65rem] font-mono bg-white dark:bg-slate-700 text-slate-800 dark:text-white rounded px-2.5 py-1 uppercase tracking-wider transition-all shadow-sm cursor-pointer">Linter Fixed</button>
                                     <button onclick="switchCodeView('${safeId}', 'original')" id="btn-${safeId}-original" class="text-[0.65rem] font-mono text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer">Original</button>
@@ -1679,6 +1850,10 @@
                                     ${data.aiOptimizedCode ? `<button onclick="switchCodeView('${safeId}', 'optimized')" id="btn-${safeId}-optimized" class="text-[0.65rem] font-mono text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-300 bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer">✨ AI Optimized</button>` : ''}
                                 </div>
                             </div>
+                            <button onclick="toggleCodeMaximize('${safeId}')" id="maxbtn-${safeId}" data-tip="Maximize" aria-label="Maximize code panel" class="maxbtn shrink-0 inline-flex items-center justify-center h-7 w-7 rounded-md border border-slate-200 dark:border-slate-600 bg-white/70 dark:bg-slate-700/60 text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors cursor-pointer">
+                                <svg class="icon-max w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15"></path></svg>
+                                <svg class="icon-min w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 9V4.5M9 9H4.5M9 9 3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5 5.25 5.25"></path></svg>
+                            </button>
                         </div>
                         <div id="view-${safeId}-refactored" class="code-view w-full border-t border-slate-200 dark:border-slate-700/50 h-[400px]" style="display: block;">
                             <div id="monaco-container-${safeId}" class="w-full h-full"></div>
@@ -1720,6 +1895,65 @@
             }
         }
 
+        // --- AI model toggle (Flash ⇄ Pro). Global preference applied on the next scan/re-scan. ---
+        window.useProModel = window.useProModel || false;
+        function syncModelToggles() {
+            const pro = !!window.useProModel;
+            document.querySelectorAll('.model-toggle').forEach(btn => {
+                btn.classList.toggle('bg-violet-600', pro);
+                btn.classList.toggle('text-white', pro);
+                btn.classList.toggle('border-violet-700', pro);
+                btn.classList.toggle('bg-white/50', !pro);
+                btn.classList.toggle('dark:bg-slate-800/50', !pro);
+                btn.classList.toggle('text-slate-700', !pro);
+                btn.classList.toggle('dark:text-slate-300', !pro);
+                btn.classList.toggle('border-slate-200', !pro);
+                btn.classList.toggle('dark:border-slate-700', !pro);
+                const dot = btn.querySelector('.model-toggle-dot');
+                if (dot) { dot.classList.toggle('bg-white', pro); dot.classList.toggle('bg-violet-500', !pro); }
+                const lbl = btn.querySelector('.model-toggle-label');
+                if (lbl) lbl.textContent = pro ? 'Pro' : 'Flash';
+            });
+        }
+        window.toggleProModel = function() {
+            window.useProModel = !window.useProModel;
+            syncModelToggles();
+            if (typeof showToast === 'function') {
+                showToast(window.useProModel
+                    ? 'Pro model selected — Re-scan a file (or run again) to apply.'
+                    : 'Flash model selected — Re-scan to apply.');
+            }
+        };
+
+        // --- Maximize / minimize the code panel (expands to near-fullscreen, Esc to close) ---
+        function relayoutEditors(safeId) {
+            setTimeout(() => {
+                try { window.dispatchEvent(new Event('resize')); } catch (e) {}
+                ['', '-opt'].forEach(s => {
+                    const ed = (window.monacoEditors || {})[safeId + s] || (window.monacoDiffEditors || {})[safeId + s];
+                    if (ed && typeof ed.layout === 'function') ed.layout();
+                });
+            }, 60);
+        }
+        window.toggleCodeMaximize = function(safeId) {
+            const box = document.getElementById('codeblock-' + safeId);
+            if (!box) return;
+            const maxed = box.classList.toggle('code-maximized');
+            document.body.style.overflow = maxed ? 'hidden' : '';
+            const btn = document.getElementById('maxbtn-' + safeId);
+            if (btn) btn.setAttribute('data-tip', maxed ? 'Minimize' : 'Maximize');
+            relayoutEditors(safeId);
+        };
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                const open = document.querySelector('.code-maximized');
+                if (open) {
+                    const id = open.id.replace('codeblock-', '');
+                    toggleCodeMaximize(id);
+                }
+            }
+        });
+
         function activateFile(id) {
             document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active', 'bg-blue-50', 'dark:bg-slate-800'));
             const targetNav = document.getElementById(`nav-${id}`);
@@ -1730,6 +1964,7 @@
 
             const canvas = document.getElementById('main-canvas');
             canvas.innerHTML = renderedFilePayloads[id];
+            syncModelToggles();   // the just-injected toggle must reflect the current global choice
 
             // The canvas HTML was just rebuilt, so the diff containers are fresh/empty.
             // Drop any cached diff editors for this file; switchCodeView will recreate them
