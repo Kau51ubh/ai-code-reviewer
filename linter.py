@@ -1,6 +1,52 @@
 import os
 import re
 
+# Optional: use the sqlglot parser for robust, comment/string-aware SQL handling.
+# Everything degrades gracefully to regex if sqlglot isn't installed.
+try:
+    import sqlglot
+    from sqlglot.tokens import TokenType as _SgTokenType
+    _HAS_SQLGLOT = True
+except Exception:
+    _HAS_SQLGLOT = False
+
+
+def split_sql_statements(content):
+    """Split SQL into statements on TOP-LEVEL semicolons, ignoring any ';' that sits
+    inside a string literal or a comment — and preserving each statement's ORIGINAL text.
+    Uses the sqlglot tokenizer when available; falls back to a naive split otherwise."""
+    if _HAS_SQLGLOT and content:
+        try:
+            parts, start = [], 0
+            for tok in sqlglot.tokenize(content):
+                if tok.token_type == _SgTokenType.SEMICOLON:
+                    parts.append(content[start:tok.start])
+                    start = tok.end + 1
+            parts.append(content[start:])
+            return parts
+        except Exception:
+            pass
+    return content.split(';')
+
+
+def validate_sql_syntax(sql, template_vars=None):
+    """Best-effort, FREE syntax pre-check via sqlglot (no BigQuery round-trip).
+    Returns '' if it looks fine (or can't be checked confidently), else a short error.
+    Skips anything still containing template placeholders so we never false-flag them."""
+    if not (_HAS_SQLGLOT and sql and sql.strip()):
+        return ""
+    probe = sql
+    for k, v in (template_vars or {}).items():
+        probe = probe.replace('${' + k + '}', str(v))
+    # Don't try to parse code that still has unresolved placeholders.
+    if '${' in probe or '<' in probe and '>' in probe:
+        return ""
+    try:
+        sqlglot.parse(probe, read='bigquery')
+        return ""
+    except Exception as e:
+        return str(e).splitlines()[0] if str(e) else ""
+
 
 def _parse_kv(raw):
     out = {}
@@ -15,9 +61,13 @@ def _parse_kv(raw):
 
 
 # --- Generic, deployment-configured conventions (NO hardcoded business names) ---
+# Single source of truth for the ${TEMPLATE_VAR}=RealDataset convention. main.py imports
+# this same default so the parameterizer (linter) and the resolver (backend) can NEVER drift
+# — drift is what makes a ${VAR} the linter produced fail to resolve to a real BQ dataset.
+DEFAULT_SQL_DATASET_MAP = "AEDW_DB=DB_AEDWD2,STGPARTN_DB=DB_STG2PARTND2,SRC_DB=DB_SRCD2"
 # Real BigQuery dataset name -> ${TEMPLATE_VAR} it should be parameterized to.
 # Derived (reversed) from the same SQL_DATASET_MAP the backend uses. Empty disables.
-_DATASET_VARS = _parse_kv(os.environ.get("SQL_DATASET_MAP", "AEDW_DB=DB_AEDWD2"))
+_DATASET_VARS = _parse_kv(os.environ.get("SQL_DATASET_MAP", DEFAULT_SQL_DATASET_MAP))
 DATASET_PARAM_MAP = {real: '${' + var + '}' for var, real in _DATASET_VARS.items() if real}
 # Audit / batch columns that must always be parameterized to ${UPPER(name)}. Empty disables.
 PARAM_COLUMNS = [c.strip() for c in os.environ.get("SQL_PARAM_COLUMNS", "etl_batch_sk").split(',') if c.strip()]
@@ -50,6 +100,10 @@ _RESERVED_IDENTS = {
     'from', 'group', 'order', 'by', 'having', 'limit', 'union', 'all', 'distinct',
     'current_date', 'current_timestamp', 'current_datetime', 'extract', 'cast', 'date',
     'datetime', 'timestamp', 'count', 'sum', 'avg', 'min', 'max',
+    # clause/statement keywords that can sit directly left of a `<col> <op>` and must never be
+    # glued onto the column (e.g. `SET status =` must NOT become `SET_status =`).
+    'set', 'update', 'qualify', 'values', 'into', 'join', 'inner', 'left', 'right',
+    'outer', 'full', 'cross', 'partition', 'over', 'asc', 'desc', 'insert', 'delete',
 }
 
 _LIT_RE = r"'[^']*'|\"[^\"]*\"|-?\d+(?:\.\d+)?"   # quoted string OR number literal
@@ -109,7 +163,10 @@ def apply_schema_fixes(content, schema, logs):
             seen_fix.add(msg)
 
     def _fix(m):
-        col, op, val = m.group('col'), m.group('op'), m.group('val')
+        # `ref` preserves an optional table-alias prefix (HC.CLM_TYPE); `col` is the bare
+        # name used for the schema datatype lookup. ALL rewrites keep `ref` so we never drop
+        # the alias (e.g. `a.amount = '100'` must stay `a.amount = 100`, not `amount = 100`).
+        ref, col, op, val = m.group('ref'), m.group('col'), m.group('op'), m.group('val')
         ctype = col_types.get(col.lower())
         if not ctype:
             return m.group(0)
@@ -117,24 +174,30 @@ def apply_schema_fixes(content, schema, logs):
         quoted = len(val) >= 2 and val[0] in "'\"" and val[-1] == val[0]
         inner = val[1:-1] if quoted else val
 
-        # STRING column: ensure the literal is quoted (skip columns, keywords, numbers).
+        # Skip values that look like qualified column refs (TABLE.COLUMN) — not literals.
+        if not quoted and '.' in val:
+            return m.group(0)
+
+        # STRING column: ensure a bare literal is quoted (skip columns, keywords, numbers).
+        # NOTE: case-insensitive UPPER(TRIM()) wrapping is a SEPARATE, filter-scoped pass
+        # (_wrap_string_filters) so we never wrap a SET/SELECT/INSERT target by mistake.
         if ctype == 'STRING':
             if (not quoted and val.lower() not in all_cols
                     and val.upper() not in _KEYWORD_VALS and not _is_number(val)):
                 _log_once(f"Fix: Quoted string literal for STRING column '{col}' using live schema datatype.")
-                return f"{col} {op} '{val}'"
+                return f"{ref} {op} '{val}'"
 
         # NUMERIC column: drop quotes around a numeric literal.
         elif ctype in _NUMERIC_TYPES:
             if quoted and _is_number(inner):
                 _log_once(f"Fix: Removed quotes around numeric literal for {ctype} column '{col}' using live schema datatype.")
-                return f"{col} {op} {inner}"
+                return f"{ref} {op} {inner}"
 
         # DATE/DATETIME/TIMESTAMP column: quote a bare date literal so it isn't read as arithmetic.
         elif ctype in _DATE_TYPES:
             if not quoted and re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T][\d:.+-]+)?", val):
                 _log_once(f"Fix: Quoted date literal for {ctype} column '{col}' using live schema datatype.")
-                return f"{col} {op} '{val}'"
+                return f"{ref} {op} '{val}'"
 
         return m.group(0)
 
@@ -159,7 +222,7 @@ def apply_schema_fixes(content, schema, logs):
     content = re.sub(r"\x00(\d+)\x00", lambda m: _masked[int(m.group(1))], tmp)
 
     comparison_re = re.compile(
-        r"\b(?P<col>[A-Za-z_][A-Za-z0-9_]*)\s*"
+        r"\b(?P<ref>(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?P<col>[A-Za-z_][A-Za-z0-9_]*))\s*"
         r"(?P<op>=|!=|<>|>=|<=|>|<)\s*"
         r"(?P<val>'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.\-]+)"
     )
@@ -221,6 +284,27 @@ def apply_schema_fixes(content, schema, logs):
     )
     content = where_re.sub(lambda m: m.group(1) + _neutralize_unknown(m.group('body')), content)
 
+    # F. Case-insensitive STRING filters. Wrap a STRING column that is compared to a quoted
+    #    literal as `UPPER(TRIM(<ref>)) <op> UPPER(<lit>)` — but ONLY when the predicate follows
+    #    a FILTER keyword (WHERE/AND/OR/ON/HAVING/QUALIFY). That guard keeps us out of SET/SELECT/
+    #    INSERT targets (where `SET UPPER(TRIM(col)) = ...` would be invalid), and the table alias
+    #    is kept INSIDE the wrap (UPPER(TRIM(HC.CLM_TYPE)), never HC.UPPER(TRIM(CLM_TYPE))).
+    def _wrap_string_filter(m):
+        kw, ref, op, val = m.group('kw'), m.group('ref'), m.group('op'), m.group('val')
+        if col_types.get(ref.split('.')[-1].lower()) != 'STRING':
+            return m.group(0)
+        _log_once(f"Fix: Wrapped STRING filter on '{ref}' with UPPER(TRIM()) for case-insensitive matching.")
+        return f"{kw}UPPER(TRIM({ref})) {op} UPPER({val})"
+
+    filter_pred_re = re.compile(
+        r"(?P<kw>\b(?:WHERE|AND|OR|ON|HAVING|QUALIFY)\s+)"
+        r"(?P<ref>(?:[A-Za-z_][A-Za-z0-9_]*\.)?[A-Za-z_][A-Za-z0-9_]*)\s*"
+        r"(?P<op>=|!=|<>)\s*"
+        r"(?P<val>'[^']*'|\"[^\"]*\")",
+        re.IGNORECASE,
+    )
+    content = filter_pred_re.sub(_wrap_string_filter, content)
+
     return content
 
 def pre_process_sql(filename, content, schema=None):
@@ -240,19 +324,41 @@ def pre_process_sql(filename, content, schema=None):
         logs.append("Fix: Replaced 'TIMESTAMP()' with 'DATETIME()'.")
 
     # 3. Parameterize configured audit/batch columns (config-driven, generic).
+    #    IMPORTANT: only count/log a change when the value is NOT ALREADY the parameter — otherwise
+    #    a script that already uses ${COL} would be reported as "fixed" when nothing actually changed.
     for col in PARAM_COLUMNS:
         param = '${' + col.upper() + '}'
-        # Assignment form:  <col> = <value>   ->   <col> = ${COL}
-        assign_re = re.compile(r'(\b' + re.escape(col) + r'\b\s*=\s*)[^\s,;)]+', re.IGNORECASE)
-        content, n1 = assign_re.subn(lambda m: m.group(1) + param, content)
-        # SELECT-alias form:  <number> AS <col>   ->   ${COL} AS <col>
+        # Fix typo: col-<number> (minus used instead of equals) -> col = ${COL}
+        minus_typo_re = re.compile(r'\b' + re.escape(col) + r'\s*-\s*\d+', re.IGNORECASE)
+        content, n_minus = minus_typo_re.subn(col + ' = ' + param, content)
+        if n_minus:
+            logs.append(f"Fix: Corrected '{col}-<number>' (minus instead of equals) and parameterized to '{param}'.")
+
+        real_changes = [0]
+        # Assignment form:  <col> = <value>  ->  <col> = ${COL}  (skip if <value> is already ${COL})
+        def _assign(m, _p=param, _r=real_changes):
+            prefix, value = m.group(1), m.group(2)
+            if value == _p:
+                return m.group(0)            # already parameterized — leave it, don't count
+            _r[0] += 1
+            return prefix + _p
+        assign_re = re.compile(r'(\b' + re.escape(col) + r'\b\s*=\s*)([^\s,;)]+)', re.IGNORECASE)
+        content = assign_re.sub(_assign, content)
+        # SELECT-alias form:  <number> AS <col>  ->  ${COL} AS <col>
+        def _alias(m, _p=param, _col=col, _r=real_changes):
+            _r[0] += 1
+            return _p + ' AS ' + _col
         alias_re = re.compile(r'\b\d+\s+AS\s+' + re.escape(col) + r'\b', re.IGNORECASE)
-        content, n2 = alias_re.subn(param + ' AS ' + col, content)
-        if (n1 + n2) > 0:
+        content = alias_re.sub(_alias, content)
+
+        if real_changes[0] > 0:
             logs.append(f"Fix: Parameterized hardcoded '{col}' occurrences to '{param}'.")
         
-    # 4. Merge Multiple INSERTs for VALUES
-    merge_pattern = re.compile(r"(INSERT\s+INTO\s+([A-Za-z0-9_$.{}]+)(?:\s*\([^)]+\))?\s+VALUES\s*[\s\S]*?);\s*INSERT\s+INTO\s+\2(?:\s*\([^)]+\))?\s+VALUES", re.IGNORECASE)
+    # 4. Merge Multiple INSERTs for VALUES — into the same table. The separating ';' is
+    #    OPTIONAL ([;\s]*): a user who forgot the semicolon between two same-table INSERTs
+    #    still gets them collapsed into one valid batch statement (a row-comma) instead of
+    #    leaving an unparseable `...) INSERT INTO ...` boundary behind.
+    merge_pattern = re.compile(r"(INSERT\s+INTO\s+([A-Za-z0-9_$.{}]+)(?:\s*\([^)]+\))?\s+VALUES\s*[\s\S]*?\))[;\s]*INSERT\s+INTO\s+\2(?:\s*\([^)]+\))?\s+VALUES", re.IGNORECASE)
     while merge_pattern.search(content):
         content = merge_pattern.sub(r"\1,", content)
         if "Fix: Merged multiple INSERT VALUES statements into a single batch statement." not in logs:
@@ -266,8 +372,8 @@ def pre_process_sql(filename, content, schema=None):
     # 4c. Schema-driven deterministic fixes (column spacing, string-literal quoting).
     content = apply_schema_fixes(content, schema, logs)
 
-    # 5. Process Statement by Statement
-    statements = content.split(';')
+    # 5. Process Statement by Statement (parser-based split: ignores ';' in strings/comments)
+    statements = split_sql_statements(content)
     new_statements = []
     
     for stmt in statements:
@@ -329,8 +435,26 @@ def pre_process_sql(filename, content, schema=None):
                             logs.append("Fix: Extracted columns from SELECT and injected explicit Target Column List.")
                         
             elif action_part.upper() == 'VALUES':
-                stmt = stmt[:insert_match.start()] + table_part + " (col1, col2, col3) \n" + stmt[insert_match.start() + len(table_part):]
-                logs.append("Fix: Injected placeholder Target Column List (col1, col2...) into INSERT VALUES statement.")
+                # Count columns from the first VALUES row — handles nested parens like CURRENT_DATE().
+                val_count = 0
+                vm = re.search(r'VALUES\s*\(', stmt, re.IGNORECASE)
+                if vm:
+                    depth, i, top_commas = 0, vm.end() - 1, 0
+                    while i < len(stmt):
+                        c = stmt[i]
+                        if c == '(':
+                            depth += 1
+                        elif c == ')':
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        elif c == ',' and depth == 1:
+                            top_commas += 1
+                        i += 1
+                    val_count = top_commas + 1
+                col_list = ', '.join(f'col{i+1}' for i in range(val_count)) if val_count else 'col1, col2, col3'
+                stmt = stmt[:insert_match.start()] + table_part + f" ({col_list}) /* TODO: replace placeholder names — list the {val_count or 3} real target columns in order */ \n" + stmt[insert_match.start() + len(table_part):]
+                logs.append(f"Fix: Injected placeholder Target Column List ({col_list.split(', ')[0]}...) into INSERT VALUES statement.")
 
         new_statements.append(stmt)
 
@@ -374,9 +498,131 @@ def pre_process_ksh(filename, content):
 
     return '\n'.join(fixed_lines), logs
 
+def _scan_py_line(line, in_triple, paren):
+    """Advance the (in_triple_delimiter, paren_depth) state across ONE physical line,
+    ignoring '#' comments and the contents of '...'/\"...\" and triple-quoted strings.
+    Returns the state AFTER the line so callers know whether the next line begins inside
+    a string / bracketed continuation (i.e. is NOT a new logical statement)."""
+    i, n = 0, len(line)
+    while i < n:
+        if in_triple:
+            idx = line.find(in_triple, i)
+            if idx == -1:
+                return in_triple, paren            # rest of line is still inside the string
+            i, in_triple = idx + 3, None
+            continue
+        c = line[i]
+        if c == '#':
+            break                                  # comment runs to end of line
+        if c in ('"', "'"):
+            if line[i:i + 3] in ('"""', "'''"):
+                in_triple = line[i:i + 3]
+                i += 3
+                continue
+            q, i = c, i + 1                         # single-line quoted string
+            while i < n:
+                if line[i] == '\\':
+                    i += 2
+                    continue
+                if line[i] == q:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c in '([{':
+            paren += 1
+        elif c in ')]}':
+            paren = max(0, paren - 1)
+        i += 1
+    return in_triple, paren
+
+
+def _strip_inline_comment(s):
+    """Drop a trailing '# ...' comment that sits OUTSIDE any string, so a compound-header
+    check (does the line end with ':'?) isn't fooled by a '#' inside a literal."""
+    in_triple, i, n = None, 0, len(s)
+    while i < n:
+        if in_triple:
+            idx = s.find(in_triple, i)
+            if idx == -1:
+                return s
+            i, in_triple = idx + 3, None
+            continue
+        c = s[i]
+        if c == '#':
+            return s[:i]
+        if c in ('"', "'"):
+            if s[i:i + 3] in ('"""', "'''"):
+                in_triple = s[i:i + 3]
+                i += 3
+                continue
+            q, i = c, i + 1
+            while i < n:
+                if s[i] == '\\':
+                    i += 2
+                    continue
+                if s[i] == q:
+                    i += 1
+                    break
+                i += 1
+            continue
+        i += 1
+    return s
+
+
+def _normalize_py_indentation(content):
+    """Re-align the indentation of STATEMENT-START lines to their block depth.
+
+    Only the first physical line of each logical statement is touched; continuation
+    lines (inside parens/brackets or a triple-quoted string) are left BYTE-for-BYTE
+    intact — so a `script_path=\"\"\"...ksh...\"\"\"` body or bracketed argument list is
+    never corrupted. Block depth is tracked from ':'-terminated headers, and dedents are
+    inferred from the ORIGINAL relative indentation (internally consistent even when the
+    whole file is shifted). The caller only KEEPS this output if it actually compiles."""
+    lines = content.split('\n')
+    states, in_triple, paren = [], None, 0
+    for ln in lines:
+        states.append((in_triple, paren))
+        in_triple, paren = _scan_py_line(ln, in_triple, paren)
+
+    stmt_idxs = [i for i, ln in enumerate(lines)
+                 if states[i] == (None, 0) and ln.strip() and not ln.lstrip().startswith('#')]
+
+    INDENT = 4
+    stack = [{"body": 0, "opener_orig": -1}]       # module level
+    out = list(lines)
+    for k, idx in enumerate(stmt_idxs):
+        ln = lines[idx]
+        stripped = ln.lstrip(' \t')
+        orig_indent = len(ln) - len(stripped)
+        while len(stack) > 1 and orig_indent <= stack[-1]["opener_orig"]:
+            stack.pop()
+        corrected = stack[-1]["body"]
+        out[idx] = (' ' * corrected) + stripped
+        end = stmt_idxs[k + 1] if k + 1 < len(stmt_idxs) else len(lines)
+        logical = ' '.join(l.strip() for l in lines[idx:end])
+        if _strip_inline_comment(logical).rstrip().endswith(':'):
+            stack.append({"body": corrected + INDENT, "opener_orig": orig_indent})
+    return '\n'.join(out)
+
+
 def pre_process_py(filename, content):
     logs = []
-    
+
+    # 0. If the file does not parse, attempt a string/paren-aware reindent — but ONLY adopt
+    #    it when the result actually compiles, so a valid file is never reformatted and a
+    #    broken one is never made worse (anything still unparseable is left for the AI).
+    try:
+        compile(content, filename or '<dag>', 'exec')
+    except SyntaxError:
+        candidate = _normalize_py_indentation(content)
+        try:
+            compile(candidate, filename or '<dag>', 'exec')
+            content = candidate
+            logs.append("Fix: Normalized inconsistent indentation so the module parses (statement re-aligned to its block level).")
+        except SyntaxError:
+            pass
+
     # 1. Fix DAG_NAME suffix if missing
     dag_name_match = re.search(r'DAG_NAME\s*=\s*["\'](.*?)["\']', content)
     if dag_name_match:
@@ -386,8 +632,11 @@ def pre_process_py(filename, content):
             logs.append("Fix: Automatically appended mandatory '_VM' suffix to DAG_NAME.")
 
     # 2. Fix 'timedelta' import if missing
-    if "timedelta" in content and "import timedelta" not in content and "datetime, timedelta" not in content:
-        content = re.sub(r'from datetime import datetime', r'from datetime import datetime, timedelta', content)
+    already_imported = ("import timedelta" in content
+                        or "datetime, timedelta" in content
+                        or "datetime,timedelta" in content)
+    if "timedelta" in content and not already_imported:
+        content = re.sub(r'from datetime import datetime\b', r'from datetime import datetime, timedelta', content)
         logs.append("Fix: Injected missing 'timedelta' import into datetime module.")
 
     # 3. Remove 'catchup' from default_args if it exists
@@ -395,24 +644,48 @@ def pre_process_py(filename, content):
         content = re.sub(r'[ \t]*[\'"]catchup[\'"]\s*:\s*(True|False)\s*,?\n?', '', content, flags=re.IGNORECASE)
         logs.append("Fix: Removed 'catchup' from default_args (parameter belongs in DAG definition, not args).")
 
-    # 4. Inject missing Airflow parameters directly into the DAG() instantiation
+    # 4. Inject missing Airflow parameters into the DAG() instantiation. Handles BOTH the
+    #    `dag = DAG(` and the `with DAG(` (context-manager) forms. CRITICAL: only LOG a parameter
+    #    we ACTUALLY injected — if no DAG() opening is found, the regex matches nothing, so we must
+    #    not claim a fix that never happened (which left the diff unchanged but the log saying "fixed").
     missing_dag_params = []
-    
     if "catchup=" not in content.replace(" ", ""):
-        missing_dag_params.append("catchup=False")
-        logs.append("Fix: Injected 'catchup=False' into DAG definition.")
-        
+        missing_dag_params.append(("catchup=False",
+                                   "Fix: Injected 'catchup=False' into DAG definition."))
     if "max_active_runs" not in content:
-        missing_dag_params.append("max_active_runs=1")
-        logs.append("Fix: Injected 'max_active_runs=1' concurrency limit into DAG definition.")
-        
+        missing_dag_params.append(("max_active_runs=1",
+                                   "Fix: Injected 'max_active_runs=1' concurrency limit into DAG definition."))
     if "tags=" not in content.replace(" ", ""):
-        missing_dag_params.append('tags=["interface"]')
-        logs.append("Fix: Injected 'tags=[\"interface\"]' array for workspace categorization.")
-        
+        missing_dag_params.append(('tags=["interface"]',
+                                   'Fix: Injected \'tags=["interface"]\' array for workspace categorization.'))
+
     if missing_dag_params:
-        injection_string = ",\n\t\t".join(missing_dag_params) + ",\n\t\t"
-        content = re.sub(r'(dag\s*=\s*DAG\s*\()', fr'\1\n\t\t{injection_string}', content, flags=re.IGNORECASE)
+        dag_open_re = re.compile(r'((?:dag\s*=\s*DAG|with\s+DAG)\s*\()', re.IGNORECASE)
+        # Detect indent style from the existing DAG() body; default to 8 spaces.
+        indent_match = re.search(r'(?:dag\s*=\s*DAG|with\s+DAG)\s*\(\s*\n([ \t]+)', content, re.IGNORECASE)
+        indent = indent_match.group(1) if indent_match else "        "
+        injection_string = ("," + "\n" + indent).join(p for p, _ in missing_dag_params) + ","
+        content, n_inj = dag_open_re.subn(lambda m: m.group(1) + "\n" + indent + injection_string, content, count=1)
+        if n_inj:                                  # only record fixes that were actually applied
+            for _, msg in missing_dag_params:
+                logs.append(msg)
+
+    # 5. Normalize stale job-ID prefix in variable names and task_id strings to match DAG_NAME.
+    # E.g. if DAG_NAME = "SRCMC11111_INTERFACE_VM", any SRCMC10435 prefix should become SRCMC11111.
+    dag_prefix_match = re.search(r'DAG_NAME\s*=\s*["\']([A-Z]+\d+)(?:_[A-Z_]+)?["\']', content)
+    if dag_prefix_match:
+        correct_id = dag_prefix_match.group(1)
+        stale_re = re.compile(r'\b([A-Z]{2,8}\d{3,8})(_\d+)\b')
+        replaced_ids = set()
+        def _replace_stale_var(m):
+            found_id, suffix = m.group(1), m.group(2)
+            if found_id != correct_id and found_id.startswith(correct_id[:2]):
+                replaced_ids.add(found_id)
+                return correct_id + suffix
+            return m.group(0)
+        content = stale_re.sub(_replace_stale_var, content)
+        if replaced_ids:
+            logs.append(f"Fix: Updated stale job-ID prefix(es) {sorted(replaced_ids)} to '{correct_id}' in variable names to match DAG_NAME.")
 
     return content, logs
 
