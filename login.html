@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in · AI Code Reviewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.classList.add('dark');
+        if (typeof tailwind !== 'undefined') {
+            tailwind.config = { darkMode: 'class', theme: { extend: {
+                fontFamily: { sans: ['Inter','sans-serif'], mono: ['Fira Code','monospace'] },
+                colors: { brand: { 50:'#eff6ff',100:'#dbeafe',500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',900:'#1e3a8a' } },
+                animation: { blob: 'blob 7s infinite' },
+                keyframes: { blob: { '0%':{transform:'translate(0,0) scale(1)'},'33%':{transform:'translate(30px,-50px) scale(1.1)'},'66%':{transform:'translate(-20px,20px) scale(0.9)'},'100%':{transform:'translate(0,0) scale(1)'} } }
+            } } };
+        }
+    </script>
+    <style>
+        body { background-color:#f8fafc; background-image: radial-gradient(#cbd5e1 1px, transparent 1px); background-size: 24px 24px; }
+        .dark body { background-color:#0f172a; background-image: radial-gradient(#334155 1px, transparent 1px); }
+        @keyframes blob {0%{transform:translate(0,0) scale(1)}33%{transform:translate(30px,-50px) scale(1.1)}66%{transform:translate(-20px,20px) scale(0.9)}100%{transform:translate(0,0) scale(1)}}
+        @keyframes fadeIn { from {opacity:0;transform:translateY(8px)} to {opacity:1;transform:translateY(0)} }
+    </style>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body class="min-h-screen text-slate-800 dark:text-slate-200 flex flex-col items-center justify-center relative overflow-hidden px-4">
+    <div class="fixed inset-0 w-full h-full overflow-hidden pointer-events-none -z-10">
+        <div class="absolute top-[-10%] left-[-10%] w-96 h-96 bg-brand-400/20 dark:bg-brand-600/20 rounded-full mix-blend-multiply filter blur-3xl opacity-70 animate-blob"></div>
+        <div class="absolute top-[20%] right-[-5%] w-96 h-96 bg-purple-400/20 dark:bg-purple-600/20 rounded-full mix-blend-multiply filter blur-3xl opacity-70 animate-blob" style="animation-delay:2s"></div>
+        <div class="absolute bottom-[-20%] left-[20%] w-96 h-96 bg-emerald-400/20 dark:bg-emerald-600/20 rounded-full mix-blend-multiply filter blur-3xl opacity-70 animate-blob" style="animation-delay:4s"></div>
+    </div>
+
+    <div class="w-full max-w-md" style="animation: fadeIn 0.4s ease-out;">
+        <div class="flex flex-col items-center mb-8">
+            <div class="w-14 h-14 rounded-2xl bg-brand-600 text-white flex items-center justify-center shadow-lg shadow-brand-500/30 mb-4">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+            </div>
+            <h1 class="text-2xl font-bold text-slate-800 dark:text-white tracking-tight">AI Code <span class="text-brand-600 dark:text-brand-400">Reviewer</span></h1>
+            <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">Automated BigQuery QA &amp; optimization</p>
+        </div>
+
+        <div class="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8">
+            <h2 class="text-lg font-bold text-slate-800 dark:text-white text-center">Sign in to continue</h2>
+            <p class="text-sm text-slate-500 dark:text-slate-400 text-center mt-1.5 mb-6">Use your Google account to access the reviewer.</p>
+
+            <div id="g_id_onload" data-client_id="{{GOOGLE_CLIENT_ID}}" data-callback="handleCredentialResponse" data-auto_select="false" data-itp_support="true"></div>
+            <div class="flex justify-center">
+                <div class="g_id_signin" data-type="standard" data-shape="pill" data-theme="filled_blue" data-text="signin_with" data-size="large" data-logo_alignment="left"></div>
+            </div>
+
+            <div id="configWarning" style="display:none;" class="mt-4 p-3.5 rounded-xl border border-amber-200 dark:border-amber-900/50 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 text-xs leading-relaxed">
+                <strong>Sign-in isn't configured yet.</strong> Set the <code class="font-mono bg-amber-100 dark:bg-amber-900/40 px-1 rounded">GOOGLE_OAUTH_CLIENT_ID</code> env var to a Google OAuth <em>Web</em> client ID, and add this site's URL to its <em>Authorized JavaScript origins</em>.
+            </div>
+            <div id="errorBox" style="display:none;" class="mt-4 p-3.5 rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 text-sm flex items-start gap-2">
+                <svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                <span id="errorText"></span>
+            </div>
+            <div id="loadingBox" style="display:none;" class="mt-4 flex items-center justify-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                <div class="animate-spin rounded-full h-4 w-4 border-2 border-brand-500 border-t-transparent"></div> Verifying your account…
+            </div>
+        </div>
+        <p class="text-center text-xs text-slate-400 dark:text-slate-500 mt-6">🔒 Access is restricted to authenticated Google accounts.</p>
+    </div>
+
+    <script>
+        const CLIENT_ID = "{{GOOGLE_CLIENT_ID}}";
+        document.addEventListener('DOMContentLoaded', function () {
+            if (!CLIENT_ID || CLIENT_ID.indexOf('{{') === 0) document.getElementById('configWarning').style.display = 'block';
+        });
+        function showError(msg){ document.getElementById('loadingBox').style.display='none'; const b=document.getElementById('errorBox'); document.getElementById('errorText').textContent=msg; b.style.display='flex'; }
+        function handleCredentialResponse(response){
+            document.getElementById('errorBox').style.display='none';
+            document.getElementById('loadingBox').style.display='flex';
+            fetch('/auth/google', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({credential: response.credential}) })
+              .then(r => r.json().then(j => ({ok:r.ok, j})))
+              .then(({ok,j}) => { if(ok){ window.location.href='/'; } else { showError(j.error || 'Sign-in failed. Please try again.'); } })
+              .catch(() => showError('Network error during sign-in. Please try again.'));
+        }
+    </script>
+</body>
+</html>
