@@ -444,6 +444,13 @@
                     </button>
                 </div>
 
+                <div class="relative mb-3 shrink-0">
+                    <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                    </span>
+                    <input type="text" id="sidebar-search" oninput="searchSidebar()" placeholder="Find a file…"
+                        class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs font-medium focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none transition-colors">
+                </div>
                 <ul id="sidebar-list" class="space-y-2 max-h-[calc(100vh-280px)] overflow-y-auto pr-1 pb-4"></ul>
                 <p id="sidebar-empty" style="display:none;" class="text-center text-xs text-slate-400 dark:text-slate-500 italic py-8">No files in this category.</p>
                 
@@ -790,7 +797,25 @@
             clean:    ['bg-white','dark:bg-slate-700','ring-emerald-300','dark:ring-emerald-700','shadow-sm'],
         };
 
+        // Status chip + free-text search COMPOSE: an item shows only when it matches both.
+        window.activeSidebarStatus = 'all';
+        function applySidebarFilters() {
+            const q = (document.getElementById('sidebar-search') || { value: '' }).value.trim().toLowerCase();
+            const status = window.activeSidebarStatus;
+            let visible = 0;
+            document.querySelectorAll('.sidebar-item').forEach(li => {
+                const okStatus = status === 'all' || li.dataset.status === status;
+                const okText = !q || (li.dataset.fname || '').includes(q);
+                const match = okStatus && okText;
+                li.style.display = match ? 'flex' : 'none';
+                if (match) visible++;
+            });
+            const empty = document.getElementById('sidebar-empty');
+            if (empty) empty.style.display = visible === 0 ? 'block' : 'none';
+        }
+        window.searchSidebar = function() { applySidebarFilters(); }
         window.filterSidebar = function(status) {
+            window.activeSidebarStatus = status;
             ['all', 'issues', 'optimize', 'autofix', 'clean'].forEach(id => {
                 const btn = document.getElementById('filter-' + id);
                 if (!btn) return;
@@ -803,14 +828,7 @@
                     btn.classList.add('ring-transparent');
                 }
             });
-            let visible = 0;
-            document.querySelectorAll('.sidebar-item').forEach(li => {
-                const match = status === 'all' || li.dataset.status === status;
-                li.style.display = match ? 'flex' : 'none';
-                if (match) visible++;
-            });
-            const empty = document.getElementById('sidebar-empty');
-            if (empty) empty.style.display = visible === 0 ? 'block' : 'none';
+            applySidebarFilters();
         }
 
         window.updateFilterCounts = function() {
@@ -1323,7 +1341,9 @@
                 let skippedCount = 0, processedCount = 0;
 
                 // Estimate based ONLY on the files (and the content slice) actually scanned this run.
-                const complexRe = /\bJOIN\b|\bGROUP\s+BY\b|OVER\s*\(|\bPARTITION\s+BY\b|\bUNION\b/i;
+                // Mirrors the backend's red-flag AI gate (needs_ai_review) so the estimate
+                // matches which files will actually spend tokens.
+                const complexRe = /SELECT \*|CROSS\s+JOIN|\bUNION\b|OVER\s*\(|\(\s*SELECT\b/i;
                 let estAiFiles = 0, estAiChars = 0;
                 plan.filter(p => !p.willSkip).forEach(p => {
                     const f = p.file;
@@ -1578,6 +1598,7 @@
                 patch: fileResult.patch || '',
                 isDiff: fileResult.review_scope === 'diff',
                 tokens: fileResult.tokens || 0,   // AI tokens spent on THIS file (0 = deterministic only)
+                model: fileResult.model || '',    // which model(s) reviewed it, e.g. "…-pro (think) + …-flash (code)"
                 chatHistory: []
             };
 
@@ -1634,6 +1655,7 @@
             sidebarItem.className = `sidebar-item p-3 rounded-xl border border-transparent flex flex-col gap-1.5`;
             sidebarItem.id = `nav-${safeId}`;
             sidebarItem.dataset.status = statusId;
+            sidebarItem.dataset.fname = (filename || '').toLowerCase();   // for the sidebar search box
             sidebarItem.onclick = () => activateFile(safeId);
             sidebarItem.innerHTML = `
                 <div class="flex items-center justify-between w-full gap-2">
@@ -1837,7 +1859,10 @@
                         <div class="bg-white/40 dark:bg-slate-800/30 p-6 rounded-xl border ${glowClass} markdown-body max-h-[400px] overflow-y-auto backdrop-blur-sm transition-all duration-300">
                             <h4 class="font-bold text-slate-900 dark:text-white text-xs uppercase tracking-widest mb-4 flex items-center justify-between gap-2">
                                 <span class="flex items-center gap-2"><div class="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse"></div> AI Architect Review</span>
-                                ${isComplexOptimization ? '<span class="text-[9px] text-brand-500 bg-brand-50 dark:bg-brand-900/30 px-2 py-0.5 rounded-full">Deep Optimization Detected</span>' : ''}
+                                <span class="flex items-center gap-1.5">
+                                    ${data.model ? `<span title="Model(s) that reviewed this file" class="text-[9px] font-mono text-purple-600 dark:text-purple-300 bg-purple-50 dark:bg-purple-900/30 px-2 py-0.5 rounded-full normal-case tracking-normal">${data.model}</span>` : ''}
+                                    ${isComplexOptimization ? '<span class="text-[9px] text-brand-500 bg-brand-50 dark:bg-brand-900/30 px-2 py-0.5 rounded-full">Deep Optimization Detected</span>' : ''}
+                                </span>
                             </h4>
                             ${actionCallout}
                             <div class="text-sm text-slate-700 dark:text-slate-300">${marked.parse(data.reviewPart)}</div>
@@ -1856,10 +1881,15 @@
                                     ${data.aiOptimizedCode ? `<button onclick="switchCodeView('${safeId}', 'optimized')" id="btn-${safeId}-optimized" class="text-[0.65rem] font-mono text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-300 bg-transparent rounded px-2.5 py-1 uppercase tracking-wider transition-all cursor-pointer">✨ AI Optimized</button>` : ''}
                                 </div>
                             </div>
-                            <button onclick="toggleCodeMaximize('${safeId}')" id="maxbtn-${safeId}" data-tip="Maximize" aria-label="Maximize code panel" class="maxbtn shrink-0 inline-flex items-center justify-center h-7 w-7 rounded-md border border-slate-200 dark:border-slate-600 bg-white/70 dark:bg-slate-700/60 text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors cursor-pointer">
+                            <div class="flex items-center gap-1.5 shrink-0">
+                            <button onclick="copyCurrentCode('${safeId}')" id="copybtn-${safeId}" title="Copy the Linter-Fixed code" class="inline-flex items-center justify-center h-7 w-7 rounded-md border border-slate-200 dark:border-slate-600 bg-white/70 dark:bg-slate-700/60 text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors cursor-pointer">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                            </button>
+                            <button onclick="toggleCodeMaximize('${safeId}')" id="maxbtn-${safeId}" title="Maximize code panel" aria-label="Maximize code panel" class="maxbtn shrink-0 inline-flex items-center justify-center h-7 w-7 rounded-md border border-slate-200 dark:border-slate-600 bg-white/70 dark:bg-slate-700/60 text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors cursor-pointer">
                                 <svg class="icon-max w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15"></path></svg>
                                 <svg class="icon-min w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 9V4.5M9 9H4.5M9 9 3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5 5.25 5.25"></path></svg>
                             </button>
+                            </div>
                         </div>
                         <div id="view-${safeId}-refactored" class="code-view w-full border-t border-slate-200 dark:border-slate-700/50 h-[400px]" style="display: block;">
                             <div id="monaco-container-${safeId}" class="w-full h-full"></div>
@@ -1974,6 +2004,21 @@
                 if (open) toggleCodeMaximize(open.id.replace('codeblock-', ''));
             }
         });
+
+        // Copy the current Linter-Fixed code (the committed baseline) to the clipboard.
+        window.copyCurrentCode = async function(safeId) {
+            const data = window.fileDataStore[safeId];
+            if (!data) return;
+            const code = (window.monacoEditors && window.monacoEditors[safeId])
+                ? window.monacoEditors[safeId].getValue()       // include any in-editor edits
+                : (data.pureRefactoredCode || '');
+            try {
+                await navigator.clipboard.writeText(code);
+                showToast('Linter-fixed code copied to clipboard.', 'success');
+            } catch (e) {
+                showToast('Copy failed — your browser blocked clipboard access.', 'error');
+            }
+        };
 
         function activateFile(id) {
             document.querySelectorAll('.sidebar-item').forEach(el => el.classList.remove('active', 'bg-blue-50', 'dark:bg-slate-800'));
