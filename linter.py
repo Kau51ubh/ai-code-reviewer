@@ -454,7 +454,10 @@ def pre_process_sql(filename, content, schema=None):
                     val_count = top_commas + 1
                 col_list = ', '.join(f'col{i+1}' for i in range(val_count)) if val_count else 'col1, col2, col3'
                 stmt = stmt[:insert_match.start()] + table_part + f" ({col_list}) /* TODO: replace placeholder names — list the {val_count or 3} real target columns in order */ \n" + stmt[insert_match.start() + len(table_part):]
-                logs.append(f"Fix: Injected placeholder Target Column List ({col_list.split(', ')[0]}...) into INSERT VALUES statement.")
+                # Name the target table so multiple INSERTs in one file produce DISTINCT messages
+                # (instead of the same "Injected placeholder…" line repeated for each statement).
+                table_name = re.sub(r'(?i)^\s*INSERT\s+INTO\s+', '', table_part).strip()
+                logs.append(f"Fix: Injected placeholder Target Column List ({val_count or 3} cols) into INSERT for {table_name} — replace col1, col2… with the real column names.")
 
         new_statements.append(stmt)
 
