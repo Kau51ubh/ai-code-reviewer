@@ -307,8 +307,63 @@ def apply_schema_fixes(content, schema, logs):
 
     return content
 
+# Environment path segments that should never be hardcoded (rules_sql.txt: "/load/dev2/" ->
+# "/load/${env}/"). Config-driven; matched only as a COMPLETE path segment (slash on both sides),
+# so '/product/' or '/devops/' are never touched.
+ENV_PATH_SEGMENTS = [s.strip() for s in os.environ.get(
+    "ENV_PATH_SEGMENTS", "dev,dev1,dev2,qa,uat,stg,stage,prd,prod").split(',') if s.strip()]
+_ENV_PATH_RE = re.compile(r'/(' + '|'.join(re.escape(s) for s in ENV_PATH_SEGMENTS) + r')(?=/)',
+                          re.IGNORECASE)
+
+
+def _mask_sql_strings(content):
+    """Mask quoted literals so structural fixes can never touch text inside strings.
+    Returns (masked_content, restore_fn)."""
+    masked = []
+    def _m(m):
+        masked.append(m.group(0))
+        return f"\x00{len(masked) - 1}\x00"
+    tmp = re.sub(r"'[^']*'|\"[^\"]*\"", _m, content)
+    return tmp, lambda s: re.sub(r"\x00(\d+)\x00", lambda m: masked[int(m.group(1))], s)
+
+
 def pre_process_sql(filename, content, schema=None):
     logs = []
+
+    # 0. Structural typo fixes that need string-masking so literals are never altered.
+    tmp, _restore = _mask_sql_strings(content)
+
+    # 0a. NULL comparisons: `col = NULL` is always-false in SQL — the intent is IS NULL.
+    def _null_cmp(m):
+        ref, op = m.group(1), m.group(2)
+        return f"{ref} IS NULL" if op == '=' else f"{ref} IS NOT NULL"
+    tmp, n_null = re.subn(r'\b([A-Za-z_][\w.]*)\s*(!=|<>|(?<![<>!=])=)\s*NULL\b', _null_cmp, tmp, flags=re.IGNORECASE)
+    if n_null:
+        logs.append(f"Fix: Rewrote {n_null} NULL comparison(s) ('= NULL' / '!= NULL') to IS NULL / IS NOT NULL — '=' never matches NULL.")
+
+    # 0b. Doubled commas (`a,, b`) and trailing commas before FROM / a closing paren.
+    tmp, n_dc = re.subn(r',\s*,', ',', tmp)
+    if n_dc:
+        logs.append("Fix: Removed doubled comma(s) in a column/value list.")
+    tmp, n_tf = re.subn(r',(\s*)(FROM\b)', r'\1\2', tmp, flags=re.IGNORECASE)
+    if n_tf:
+        logs.append("Fix: Removed trailing comma before FROM (invalid in BigQuery).")
+    tmp, n_tp = re.subn(r',(\s*)\)', r'\1)', tmp)
+    if n_tp:
+        logs.append("Fix: Removed trailing comma before a closing parenthesis.")
+
+    content = _restore(tmp)
+
+    # 0c. Hardcoded environment path segments -> ${env} (rules_sql convention). Runs on the
+    #     RESTORED content because in SQL these paths live INSIDE string literals.
+    content, n_env = _ENV_PATH_RE.subn('/${env}', content)
+    if n_env:
+        logs.append("Fix: Parameterized hardcoded environment path segment(s) to '/${env}/'.")
+
+    # 0d. Unbalanced single quote — unfixable deterministically, but flag it up front so the
+    #     user sees the cause even when the BQ dry-run is unavailable. ('' escapes masked first.)
+    if content.replace("''", "").count("'") % 2 == 1:
+        logs.append("Critical: Unbalanced single quote detected — a string literal is missing its closing quote.")
 
     # 1. Parameterize hardcoded BigQuery datasets (config-driven, generic — no hardcoded names).
     for real_ds, template in DATASET_PARAM_MAP.items():
@@ -462,16 +517,56 @@ def pre_process_sql(filename, content, schema=None):
         new_statements.append(stmt)
 
     content = ';\n'.join(new_statements) + (';' if content.strip().endswith(';') else '')
+
+    # 6. Terminate the final statement. Find the last CODE line (skip blank/comment-only lines);
+    #    if it doesn't end with ';', append one — a missing terminator is the most common reason a
+    #    multi-statement script fails to parse when another statement is added later.
+    def _code_only(line):
+        # Strip a trailing '-- comment', but only when the '--' is OUTSIDE a string literal.
+        idx = 0
+        while True:
+            pos = line.find('--', idx)
+            if pos == -1:
+                return line.rstrip()
+            if line[:pos].count("'") % 2 == 0:
+                return line[:pos].rstrip()
+            idx = pos + 2
+
+    lines = content.split('\n')
+    for i in range(len(lines) - 1, -1, -1):
+        code_part = _code_only(lines[i])
+        if code_part.strip():
+            if not code_part.endswith(';'):
+                lines[i] = code_part + ';' + lines[i][len(code_part):]
+                content = '\n'.join(lines)
+                logs.append("Fix: Appended the missing statement-terminating semicolon to the final statement.")
+            break
+
     return content, logs
 
 def pre_process_ksh(filename, content):
     logs = []
     fixed_lines = []
     lines = content.split('\n')
-    
+
     needs_set_e = "set -e" not in content and "set -o pipefail" not in content
 
+    # Missing shebang: insert the standard interpreter line so the script is directly executable
+    # (and so the strict-mode injection below lands right after it).
+    if lines and not lines[0].startswith("#!"):
+        lines.insert(0, "#!/bin/ksh")
+        logs.append("Fix: Inserted missing '#!/bin/ksh' shebang at the top of the script.")
+
+    env_path_fixed = False
     for idx, line in enumerate(lines, start=1):
+        # Hardcoded environment path segments (e.g. /load/dev2/) -> parameterized /${env}/ ,
+        # matching the SQL convention from rules_sql.txt. Skipped on comment lines.
+        if not line.lstrip().startswith('#') and _ENV_PATH_RE.search(line):
+            line = _ENV_PATH_RE.sub('/${env}', line)
+            if not env_path_fixed:
+                logs.append("Fix: Parameterized hardcoded environment path segment(s) to '/${env}/'.")
+                env_path_fixed = True
+
         # Apply physical fixes to KSH so the Diff view populates correctly
         if "bq query" in line:
             logs.append(f"Line {idx:03d}: Forbidden raw 'bq query' invocation found. Refactored to wrapper.")
@@ -499,7 +594,14 @@ def pre_process_ksh(filename, content):
             fixed_lines.insert(0, "set -e")
             fixed_lines.insert(1, "set -o pipefail")
 
-    return '\n'.join(fixed_lines), logs
+    result = '\n'.join(fixed_lines)
+
+    # Rules gap (rules_ksh.txt): every BQ execution should be followed by a Return-Code check.
+    # Deterministically verifiable: the wrapper is called but '$?' / RC= is never inspected.
+    if 'execute_bq_wrapper' in result and not re.search(r'\$\?|RC\s*=', result):
+        logs.append("Warning: 'execute_bq_wrapper' is called but its return code is never checked — add an RC=$? check after each execution.")
+
+    return result, logs
 
 def _scan_py_line(line, in_triple, paren):
     """Advance the (in_triple_delimiter, paren_depth) state across ONE physical line,
@@ -689,6 +791,15 @@ def pre_process_py(filename, content):
         content = stale_re.sub(_replace_stale_var, content)
         if replaced_ids:
             logs.append(f"Fix: Updated stale job-ID prefix(es) {sorted(replaced_ids)} to '{correct_id}' in variable names to match DAG_NAME.")
+
+    # 6. Deterministic advisories (no auto-fix — these need a human value/decision).
+    if re.search(r'\bDAG\s*\(', content):
+        if 'start_date' not in content:
+            logs.append("Warning: DAG defines no 'start_date' — Airflow requires one (set it in DAG() or default_args).")
+        if 'schedule_interval' not in content and 'schedule=' not in content.replace(' ', ''):
+            logs.append("Warning: DAG defines no schedule ('schedule_interval'/'schedule') — it will never run automatically.")
+    if re.search(r'\bexcept\s*:', content):
+        logs.append("Warning: Bare 'except:' swallows ALL errors (incl. SystemExit) — catch specific exceptions instead.")
 
     return content, logs
 
