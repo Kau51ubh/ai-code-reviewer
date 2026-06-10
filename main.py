@@ -83,19 +83,25 @@ bq_client = bigquery.Client()
 
 BQ_ANALYTICS_TABLE = os.environ.get("BQ_ANALYTICS_TABLE", "code_review_analytics.scan_history")
 FINOPS_MAX_BYTES_THRESHOLD = int(os.environ.get("FINOPS_MAX_BYTES_THRESHOLD", 10 * 1024 * 1024 * 1024))
-# Primary model + a known-good fallback. The default MUST be a model the project can actually
-# reach (a non-existent id 404s on every call). gemini-2.5-flash is the verified-available default;
-# set GEMINI_MODEL to a newer one ONLY if your Vertex project has access to it.
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+# Models. These default to the newer Gemini 3.x line shown in your Model Garden, but the EXACT
+# api id matters — open the model in Model Garden → "Use this model"/sample code and copy the
+# `model="..."` string, then override the env var if it differs (preview ids are often
+# date-versioned, e.g. gemini-3.1-pro-preview-MM-YYYY). A wrong id is SAFE: an unreachable model
+# falls back to GEMINI_FALLBACK_MODEL automatically, so reviews keep working.
+#   GEMINI_MODEL          – default per-file model (fast / frugal)            → "Gemini 3.5 Flash"
+#   GEMINI_PRO_MODEL      – the UI Pro toggle's higher-reasoning model        → "Gemini 3.1 Pro Preview"
+#   GEMINI_FALLBACK_MODEL – known-good safety net if the above can't be reached
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_PRO_MODEL = os.environ.get("GEMINI_PRO_MODEL", "gemini-3.1-pro-preview")
 GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
-# Higher-quality model the UI toggle can switch to per-scan (slower + pricier). Must be a model
-# your Vertex project/region can reach; override the id if yours differs.
-GEMINI_PRO_MODEL = os.environ.get("GEMINI_PRO_MODEL", "gemini-2.5-pro")
 # Hard ceiling on a single response's output tokens, and the largest file (in lines) for which
 # we let the AI attempt a FULL rewrite. Beyond that we switch to advisory-only so a long file is
 # never half-emitted (which previously looked like the AI "deleting" code). Both are overridable.
 AI_MAX_OUTPUT_TOKENS = int(os.environ.get("AI_MAX_OUTPUT_TOKENS", "32768"))
 AI_FULL_REWRITE_MAX_LINES = int(os.environ.get("AI_FULL_REWRITE_MAX_LINES", "1200"))
+# Retries (with backoff) for a rate-limited (429) Gemini call before giving up and degrading
+# gracefully to the linter-only result. Kept small so a sustained quota issue fails fast.
+AI_MAX_RETRIES = int(os.environ.get("AI_MAX_RETRIES", "1"))
 
 
 def _parse_kv(raw):
@@ -179,13 +185,20 @@ def generate_ai(prompt, max_output_tokens=4096, model=None):
     """
     primary = model or GEMINI_MODEL
     capped = max(1024, min(int(max_output_tokens or 4096), AI_MAX_OUTPUT_TOKENS))
-    try:
-        return _generate_with_model(primary, prompt, capped)
-    except Exception as e:
-        if (GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != primary
-                and _is_model_unavailable(e)):
-            return _generate_with_model(GEMINI_FALLBACK_MODEL, prompt, capped)
-        raise
+    for attempt in range(AI_MAX_RETRIES + 1):
+        try:
+            return _generate_with_model(primary, prompt, capped)
+        except Exception as e:
+            # Configured model unreachable (404 / no access) → one-shot retry on the fallback model.
+            if (GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != primary
+                    and _is_model_unavailable(e)):
+                return _generate_with_model(GEMINI_FALLBACK_MODEL, prompt, capped)
+            # Rate-limited / quota (429) → brief exponential backoff, then retry. After the last
+            # attempt the error propagates so the caller can degrade gracefully (keep linter result).
+            if _is_rate_limited(e) and attempt < AI_MAX_RETRIES:
+                time.sleep(min(8, 2 * (attempt + 1)))      # 2s, 4s, …
+                continue
+            raise
 
 
 def _is_model_unavailable(err):
@@ -195,6 +208,14 @@ def _is_model_unavailable(err):
     return ('not_found' in s or '404' in s or 'was not found' in s
             or 'does not have access' in s or 'is not allowed' in s
             or 'invalid model' in s or 'unknown model' in s)
+
+
+def _is_rate_limited(err):
+    """A 429 / quota / rate-limit error from Vertex AI — retryable (with backoff) and, if it
+    persists, a signal to skip the AI for this file rather than fail the whole review."""
+    s = str(err).lower()
+    return ('429' in s or 'resource_exhausted' in s or 'resource exhausted' in s
+            or 'rate limit' in s or 'ratelimit' in s or 'quota' in s or 'exceeded' in s)
 
 
 def _generate_with_model(model, prompt, capped):
@@ -371,16 +392,21 @@ def needs_ai_review(filename, content):
         # Escalate ONLY on a deterministic RED FLAG an expert would genuinely want to look at —
         # NOT the mere presence of JOIN/GROUP BY. A well-formed single-join, filtered, aggregated
         # query almost always comes back "it's fine", so asking the AI there just burns tokens
-        # (the user can still force a review via the Architect chat). Red flags worth the spend:
+        # (the user can still force a review via the Architect chat or the Pro toggle). Word-boundary
+        # regex is used throughout so a keyword at the START of a line (after a newline, not a space)
+        # is still detected — a plain substring like ' JOIN ' would miss those and misfire.
+        def has(pat):
+            return re.search(pat, up) is not None
+        n_joins = len(re.findall(r'\bJOIN\b', up))
         return (
-            'SELECT *' in up                                              # scanning all columns / schema drift
-            or 'CROSS JOIN' in up                                         # explicit Cartesian product
-            or (' JOIN ' in up and ' ON ' not in up and ' USING' not in up)  # join missing its condition
-            or up.count(' JOIN ') >= 3                                    # many joins → join-order matters
-            or 'UNION' in up                                             # set ops (dedup / consolidation cost)
-            or 'OVER(' in up or 'OVER (' in up                           # window functions (incl. PARTITION BY)
-            or '(SELECT' in up.replace(' ', '')                          # nested / correlated subqueries / CTEs
-            or (' JOIN ' in up and ' WHERE ' not in up)                  # unfiltered join → full-table scan
+            'SELECT *' in up                                             # scanning all columns / schema drift
+            or has(r'\bCROSS\s+JOIN\b')                                  # explicit Cartesian product
+            or (n_joins >= 1 and not has(r'\bON\b') and not has(r'\bUSING\b'))  # join missing its condition
+            or n_joins >= 3                                              # many joins → join-order matters
+            or has(r'\bUNION\b')                                         # set ops (dedup / consolidation cost)
+            or has(r'\bOVER\s*\(')                                       # window functions (incl. PARTITION BY)
+            or has(r'\(\s*SELECT\b')                                     # nested / correlated subqueries / CTEs
+            or (n_joins >= 1 and not has(r'\bWHERE\b'))                  # unfiltered join → full-table scan
         )
 
     if fn.endswith('.py'):
@@ -616,15 +642,14 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_sc
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
     # Generic, language-agnostic expert-reviewer framing (used for SQL, Python and KSH).
+    # Tight framing to keep INPUT tokens low — a deterministic linter already ran, so the model
+    # only needs to look for genuine enhancements, not re-report mechanical fixes.
     common_header = (
-        "You are an expert software code reviewer.\n"
-        "The code below has ALREADY been pre-processed by a deterministic linter that fixed every\n"
-        "mechanical issue it could (syntax, parameterization, naming/compliance, datatype/quoting).\n"
-        "Those are SOLVED — do NOT re-report them. Act like a senior reviewer and ONLY surface genuine\n"
-        "ENHANCEMENT opportunities (correctness risks, performance, scalability, maintainability).\n"
-        "Be concise to conserve tokens. NEVER invent table or column names — rely only on the code and\n"
-        "any schema/context provided. If there is genuinely nothing worth changing, output EXACTLY:\n"
-        "\"No advanced architectural bottlenecks detected.\"\n"
+        "You are a senior code reviewer. A deterministic linter already fixed all mechanical issues "
+        "(syntax, parameterization, naming, datatypes) — do NOT re-report those. Surface ONLY genuine "
+        "enhancements (correctness, performance, scalability). Be terse: at most ~6 short bullets, no "
+        "preamble. Never invent table/column names — use only the code and the schema below. If nothing "
+        "is worth changing, output EXACTLY: \"No advanced architectural bottlenecks detected.\"\n"
     )
 
     if fn.endswith('.sql'):
@@ -653,31 +678,22 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_sc
     Do NOT output "No advanced architectural bottlenecks detected." — there is real work to do.
     """
         domain_rules = f"""
-    SQL DIALECT: Google BigQuery Standard SQL. All recommendations MUST be valid BigQuery SQL.
+    SQL DIALECT: Google BigQuery Standard SQL — all output must be valid BigQuery SQL.
     {syntax_fix_directive}
     CRITICAL RULES:
-    1. Preserve any parameterized placeholders (e.g. `${{...}}`) the linter produced — keep them parameterized.
-    2. NEVER alter the functional output or business logic. Do NOT add, remove, or modify window partitions
-       (`PARTITION BY`), aggregations, or filters. Optimizations MUST preserve the exact same data output.
-    3. CARTESIAN PRODUCT / MISSING JOIN CONDITION (correctness exception to Rule 2): if an `INNER JOIN`,
-       comma-join, or implicit `JOIN` has NO `ON`/`USING` clause, treat it as a LIKELY BUG (accidental
-       Cartesian product), NOT an intentional cross join. Flag it prominently. In the refactored code do NOT
-       rewrite to `CROSS JOIN`; add an explicit join condition using a key that BOTH tables share according to
-       the LIVE SCHEMA below, and note it must be confirmed. If no shared key is evident, insert the literal
-       placeholder `ON <JOIN_CONDITION_REQUIRED>`. Only keep `CROSS JOIN` if the original already says so.
-    4. MISSING PARTITION BY (flag, do not silently rewrite): if a window `... OVER (...)` has `ORDER BY` but no
-       `PARTITION BY`, flag that the frame spans the ENTIRE table (full scan) instead of per group. If the LIVE
-       SCHEMA shows a natural grouping key, recommend `PARTITION BY <key>` and say it must be confirmed. Never
-       silently modify an EXISTING `PARTITION BY`.
+    1. Keep the linter's ${{...}} placeholders parameterized.
+    2. Preserve exact output/logic — do not change PARTITION BY, aggregations, or filters.
+    3. A JOIN with no ON/USING is a LIKELY BUG (accidental Cartesian): flag it; add a key BOTH tables share
+       per the schema below (mark "confirm"), else `ON <JOIN_CONDITION_REQUIRED>` — never silently use CROSS
+       JOIN, and keep CROSS JOIN only if the original already had it.
+    4. A window `OVER(... ORDER BY ...)` with NO PARTITION BY scans the whole table as one frame: flag it and
+       suggest `PARTITION BY <key>` (mark "confirm"); never modify an existing PARTITION BY.
 
-    LIVE PRODUCTION SCHEMA (use ONLY these real columns to verify references — do not invent any):
-    {live_schema or '(no live schema available — do not guess column names)'}
-
-    REPO CONTEXT (other files in this PR):
-    {repo_context}
-
-    ONLY look for: correctness risks (esp. missing JOIN conditions), BigQuery bottlenecks (poor join strategy,
-    cross joins, inefficient window functions, scanning too much, not filtering early), and execution-plan/cost wins.
+    LIVE SCHEMA (use ONLY these real columns; never invent):
+    {live_schema or '(none available — do not guess column names)'}
+    REPO CONTEXT: {repo_context}
+    Look for: correctness (esp. missing JOIN conditions) and BigQuery cost/plan wins (join strategy, cross
+    joins, inefficient windows, scanning/filtering early).
     """
         rules_file = 'rules_sql.txt'
     elif fn.endswith('.py'):
@@ -963,9 +979,15 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
             # CRITICAL and not runnable — the linter already flagged it, so we spend NO AI on it
             # (don't pay tokens to re-state a deterministic check, and don't optimize a blocked
             # query). It re-evaluates on the next scan once the human fills the stub in.
+            # The UI's Pro toggle passes a model override — an explicit, paid opt-in to a thorough
+            # expert review. When it's set, run the AI REGARDLESS of the red-flag gate, so even a
+            # clean / fully-auto-fixed file gets the Pro model's opinion (and an AI-Optimized tab if
+            # it finds anything). Human-blocked critical files still skip — fix those first.
+            force_ai = bool(model)
             human_blocked = filename.endswith('.sql') and _has_human_required_placeholders(pre_cleaned_code)
             should_use_ai = (not human_blocked) and (
-                             needs_ai_review(filename, pre_cleaned_code)
+                             force_ai
+                             or needs_ai_review(filename, pre_cleaned_code)
                              or sql_unresolved
                              or bool(py_syntax_error_msg))
 
@@ -976,11 +998,18 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
                 # from showing up as "deleted" code in the diff.
                 line_count = pre_cleaned_code.count('\n') + 1
                 advisory_only = line_count > AI_FULL_REWRITE_MAX_LINES
-                ai_response_obj = review_code_with_gemini(
-                    filename, pre_cleaned_code, repo_context, live_schema,
-                    bq_error=must_fix_note,
-                    resolve_placeholders=(sql_unresolved and not sql_syntax_error_msg),
-                    advisory_only=advisory_only, model=model)
+                ai_failed = None
+                try:
+                    ai_response_obj = review_code_with_gemini(
+                        filename, pre_cleaned_code, repo_context, live_schema,
+                        bq_error=must_fix_note,
+                        resolve_placeholders=(sql_unresolved and not sql_syntax_error_msg),
+                        advisory_only=advisory_only, model=model)
+                except Exception as _ai_err:
+                    # AI unavailable (e.g. 429 rate limit). Degrade gracefully below — never fail the
+                    # whole file; the deterministic linter result is still valid.
+                    ai_failed = _ai_err
+                    ai_response_obj = DummyResponse("")
                 raw_ai_markdown = ai_response_obj.text or ""
                 try:
                     if ai_response_obj.usage_metadata:
@@ -995,22 +1024,25 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
                     # file already fits (advisory threshold), so giving the model all the room it needs
                     # almost always yields the COMPLETE rewrite — this is what keeps the AI tab present
                     # instead of withholding the fix the user actually needs.
-                    if (truncated or not suggested_code.strip()):
-                        retry_obj = review_code_with_gemini(
-                            filename, pre_cleaned_code, repo_context, live_schema,
-                            bq_error=must_fix_note,
-                            resolve_placeholders=(sql_unresolved and not sql_syntax_error_msg),
-                            max_output_tokens=AI_MAX_OUTPUT_TOKENS, model=model)
-                        retry_md = retry_obj.text or ""
-                        retry_code = extract_refactored_code(retry_md)
+                    if ai_failed is None and (truncated or not suggested_code.strip()):
                         try:
-                            if retry_obj.usage_metadata:
-                                tokens_used += retry_obj.usage_metadata.total_token_count
-                        except AttributeError:
-                            pass
-                        if retry_code.strip():
-                            raw_ai_markdown, suggested_code = retry_md, retry_code
-                            truncated = _response_was_truncated(retry_obj)
+                            retry_obj = review_code_with_gemini(
+                                filename, pre_cleaned_code, repo_context, live_schema,
+                                bq_error=must_fix_note,
+                                resolve_placeholders=(sql_unresolved and not sql_syntax_error_msg),
+                                max_output_tokens=AI_MAX_OUTPUT_TOKENS, model=model)
+                            retry_md = retry_obj.text or ""
+                            retry_code = extract_refactored_code(retry_md)
+                            try:
+                                if retry_obj.usage_metadata:
+                                    tokens_used += retry_obj.usage_metadata.total_token_count
+                            except AttributeError:
+                                pass
+                            if retry_code.strip():
+                                raw_ai_markdown, suggested_code = retry_md, retry_code
+                                truncated = _response_was_truncated(retry_obj)
+                        except Exception:
+                            pass   # a retry failure is non-fatal — keep the first response
 
                 # Advisory notes only — do NOT fold the rewrite back into the working code.
                 notes_part = raw_ai_markdown.split("### 🛠️ Final Refactored Code")[0].strip()
@@ -1042,6 +1074,23 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
                         ai_review_markdown += ("\n\n> ⚠️ The AI's full rewrite was withheld because it was still "
                             f"truncated for this file even at the maximum output budget ({AI_MAX_OUTPUT_TOKENS} "
                             "tokens). Raise `AI_MAX_OUTPUT_TOKENS`, or ask the Architect to rewrite one section at a time.")
+
+                # GRACEFUL DEGRADATION: if the AI call itself failed (e.g. a 429 rate limit), keep the
+                # valid linter result and tell the user — do NOT fail the whole file.
+                if ai_failed is not None:
+                    is_bypassed = True
+                    tokens_used = 0
+                    ai_optimized_code = ""
+                    if _is_rate_limited(ai_failed):
+                        ai_review_markdown = ("### 💡 Advanced Optimizations\n"
+                            "⚠️ The AI review was **rate-limited by Vertex AI (429)** and skipped for this file. "
+                            "The deterministic linter fixes above are applied and valid — re-scan shortly to retry the AI step.")
+                        local_linter_issues.append("Note: AI review skipped — Vertex AI rate limit (429). Deterministic fixes still applied.")
+                    else:
+                        ai_review_markdown = ("### 💡 Advanced Optimizations\n"
+                            f"⚠️ The AI review could not run for this file ({clean_bq_error(str(ai_failed))[:160]}). "
+                            "The deterministic linter fixes above are applied and valid — re-scan to retry.")
+                        local_linter_issues.append("Note: AI review skipped — model error. Deterministic fixes still applied.")
             else:
                 is_bypassed = True
                 if filename.endswith('.sql') and _has_structural_placeholders(pre_cleaned_code):
