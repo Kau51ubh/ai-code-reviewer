@@ -231,8 +231,8 @@ def _generate_with_model(model, prompt, capped):
             )
             return client.models.generate_content(model=model, contents=prompt, config=config)
         except Exception as e:
-            if _is_model_unavailable(e):
-                raise
+            if _is_model_unavailable(e) or _is_rate_limited(e):
+                raise   # a plain retry can't help these — and a 429 retry doubles quota pressure
             # else: older SDK without these config options — fall through to a plain call.
     return client.models.generate_content(model=model, contents=prompt)
 
@@ -757,6 +757,102 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_sc
     budget = max_output_tokens or min(AI_MAX_OUTPUT_TOKENS, _estimate_tokens(pre_cleaned_code) * 3 + 4096)
     return generate_ai(prompt, max_output_tokens=budget, model=model)
 
+
+def _rules_for(filename):
+    """The domain rule-pack text for a file's language ('' when none)."""
+    fn = (filename or '').lower()
+    rf = 'rules_sql.txt' if fn.endswith('.sql') else 'rules_py.txt' if fn.endswith('.py') \
+         else 'rules_ksh.txt' if fn.endswith('.ksh') else None
+    return load_rules_from_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), rf)) if rf else ""
+
+
+def _strip_line_gutter(code):
+    """Remove a leaked 'NNN | ' review gutter if the model copied it into its output."""
+    lines = code.split('\n')
+    gutter = re.compile(r'^\s*\d{1,4} \| ')
+    hits = sum(1 for l in lines if gutter.match(l))
+    if lines and hits > len(lines) // 2:
+        return '\n'.join(gutter.sub('', l) for l in lines)
+    return code
+
+
+def pro_think(filename, pre_cleaned_code, live_schema, repo_context, model=None):
+    """STAGE 1 — THINK (reasoning model, tiny output). Analyzes the linted code against the
+    rule-pack and live schema, returns (findings_markdown, changes_required, tokens).
+    Costs little despite the pricier model: the output is capped at terse bullets and it NEVER
+    emits code — the cheap model does that in stage 2, and only when stage 1 found something."""
+    code_lines = pre_cleaned_code.split('\n')
+    numbered = '\n'.join(f"{i+1:03d} | {l}" for i, l in enumerate(code_lines))
+    lang = 'BigQuery SQL' if filename.endswith('.sql') else 'Python (Airflow)' if filename.endswith('.py') else 'Korn shell'
+    prompt = (
+        f"You are a principal data engineer reviewing {lang} for production. A deterministic linter "
+        "already fixed all mechanical issues (syntax, parameterization, naming, datatypes) — never mention those.\n"
+        f"RULES:\n{_rules_for(filename)}\n"
+        f"LIVE SCHEMA (only real columns; never invent):\n{live_schema or '(none)'}\n"
+        f"REPO CONTEXT: {repo_context}\n\n"
+        "Identify ONLY genuine correctness / performance / cost issues. Output at most 6 terse bullets, "
+        "each as 'L<line>: <issue> — <fix>'. No code blocks, no preamble, no restating the rules.\n"
+        "Your LAST line must be exactly one of:  VERDICT: CHANGES_REQUIRED  |  VERDICT: NO_CHANGES\n\n"
+        f"CODE:\n```\n{numbered}\n```"
+    )
+    resp = generate_ai(prompt, max_output_tokens=1024, model=(model or GEMINI_PRO_MODEL))
+    text = (resp.text or "").strip()
+    tokens = 0
+    try:
+        if resp.usage_metadata:
+            tokens = resp.usage_metadata.total_token_count
+    except AttributeError:
+        pass
+    up = text.upper()
+    if 'NO_CHANGES' in up or 'NO ADVANCED ARCHITECTURAL BOTTLENECKS' in up:
+        changes = False
+    elif 'CHANGES_REQUIRED' in up:
+        changes = True
+    else:
+        changes = bool(text)        # no explicit verdict — assume findings imply changes
+    findings = re.sub(r'(?im)^\s*VERDICT:.*$', '', text).strip()
+    return findings, changes, tokens
+
+
+def flash_code(filename, pre_cleaned_code, findings, live_schema, model=None):
+    """STAGE 2 — CODE (fast model, code-only output). Applies the stage-1 findings to the file
+    and returns (full_corrected_code, tokens, truncated). Retries once at the max budget if the
+    first response was cut off, so a complete file always comes back or nothing does."""
+    code_lines = pre_cleaned_code.split('\n')
+    numbered = '\n'.join(f"{i+1:03d} | {l}" for i, l in enumerate(code_lines))
+    ext = filename.rsplit('.', 1)[-1].lower()
+    prompt = (
+        "You are a precise code generator. Apply EXACTLY the review findings below to the file — nothing "
+        "more. Preserve ${...} placeholders and all business logic.\n"
+        f"FINDINGS:\n{findings}\n"
+        f"LIVE SCHEMA (only real columns; never invent):\n{live_schema or '(none)'}\n\n"
+        f"Output ONLY the complete corrected file as one ```{ext} code block — every line, nothing "
+        "omitted. The 'NNN | ' gutter in the input is for line reference only: output WITHOUT it. No prose.\n\n"
+        f"CODE:\n```\n{numbered}\n```"
+    )
+    budget = min(AI_MAX_OUTPUT_TOKENS, _estimate_tokens(pre_cleaned_code) * 3 + 2048)
+    resp = generate_ai(prompt, max_output_tokens=budget, model=(model or GEMINI_MODEL))
+    tokens = 0
+    try:
+        if resp.usage_metadata:
+            tokens = resp.usage_metadata.total_token_count
+    except AttributeError:
+        pass
+    code = _strip_line_gutter(extract_refactored_code(resp.text or ""))
+    truncated = _response_was_truncated(resp)
+    if truncated or not code.strip():
+        retry = generate_ai(prompt, max_output_tokens=AI_MAX_OUTPUT_TOKENS, model=(model or GEMINI_MODEL))
+        try:
+            if retry.usage_metadata:
+                tokens += retry.usage_metadata.total_token_count
+        except AttributeError:
+            pass
+        retry_code = _strip_line_gutter(extract_refactored_code(retry.text or ""))
+        if retry_code.strip():
+            code, truncated = retry_code, _response_was_truncated(retry)
+    return code, tokens, truncated
+
+
 def _read_first(*relpaths):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     for rel in relpaths:
@@ -888,6 +984,7 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
         tokens_used = 0
         is_bypassed = False
         finops_status = "PASSED"
+        model_used = None   # which model(s) actually reviewed this file (None = deterministic only)
         structured_metadata = {}
         py_analysis = {}
 
@@ -999,78 +1096,114 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
                 line_count = pre_cleaned_code.count('\n') + 1
                 advisory_only = line_count > AI_FULL_REWRITE_MAX_LINES
                 ai_failed = None
-                try:
-                    ai_response_obj = review_code_with_gemini(
-                        filename, pre_cleaned_code, repo_context, live_schema,
-                        bq_error=must_fix_note,
-                        resolve_placeholders=(sql_unresolved and not sql_syntax_error_msg),
-                        advisory_only=advisory_only, model=model)
-                except Exception as _ai_err:
-                    # AI unavailable (e.g. 429 rate limit). Degrade gracefully below — never fail the
-                    # whole file; the deterministic linter result is still valid.
-                    ai_failed = _ai_err
-                    ai_response_obj = DummyResponse("")
-                raw_ai_markdown = ai_response_obj.text or ""
-                try:
-                    if ai_response_obj.usage_metadata:
-                        tokens_used = ai_response_obj.usage_metadata.total_token_count
-                except AttributeError:
-                    pass
-                truncated = _response_was_truncated(ai_response_obj)
+                suggested_code = ""
+                truncated = False
+                think_note = ""
 
-                if not advisory_only:
-                    suggested_code = extract_refactored_code(raw_ai_markdown)
-                    # RETRY once at the MAX budget if the rewrite came back truncated or empty. The
-                    # file already fits (advisory threshold), so giving the model all the room it needs
-                    # almost always yields the COMPLETE rewrite — this is what keeps the AI tab present
-                    # instead of withholding the fix the user actually needs.
-                    if ai_failed is None and (truncated or not suggested_code.strip()):
-                        try:
-                            retry_obj = review_code_with_gemini(
-                                filename, pre_cleaned_code, repo_context, live_schema,
-                                bq_error=must_fix_note,
-                                resolve_placeholders=(sql_unresolved and not sql_syntax_error_msg),
-                                max_output_tokens=AI_MAX_OUTPUT_TOKENS, model=model)
-                            retry_md = retry_obj.text or ""
-                            retry_code = extract_refactored_code(retry_md)
+                # ROUTE A — REPAIR (single call, always the FAST model): there is a concrete syntax
+                # error or schema-fillable placeholder. Repairing is coding work — the reasoning
+                # model adds nothing here, so we never pay its rates for it.
+                fix_route = bool(must_fix_note) or (sql_unresolved and not sql_syntax_error_msg)
+
+                if not fix_route:
+                    # ROUTE B — OPTIMIZE (two-stage): the reasoning model THINKS — terse, line-referenced
+                    # findings under a tiny output cap, never code — and ONLY if it found something does
+                    # the fast model CODE the rewrite. A "no changes" verdict costs one small call total.
+                    try:
+                        findings, changes, t1 = pro_think(filename, pre_cleaned_code, live_schema, repo_context)
+                        tokens_used += t1
+                        model_used = f"{GEMINI_PRO_MODEL} (think)"
+                        ai_review_markdown = ("### 💡 Advanced Optimizations\n"
+                                              + (findings or "✓ No advanced architectural bottlenecks detected."))
+                        if changes and advisory_only:
+                            ai_review_markdown += (f"\n\n> ℹ️ This file is large ({line_count} lines); the findings "
+                                "above are line-referenced advice. Apply them manually, or ask the Architect to "
+                                "rewrite one section at a time.")
+                        elif changes:
                             try:
-                                if retry_obj.usage_metadata:
-                                    tokens_used += retry_obj.usage_metadata.total_token_count
-                            except AttributeError:
-                                pass
-                            if retry_code.strip():
-                                raw_ai_markdown, suggested_code = retry_md, retry_code
-                                truncated = _response_was_truncated(retry_obj)
-                        except Exception:
-                            pass   # a retry failure is non-fatal — keep the first response
+                                suggested_code, t2, truncated = flash_code(filename, pre_cleaned_code, findings, live_schema)
+                                tokens_used += t2
+                                model_used += f" + {GEMINI_MODEL} (code)"
+                            except Exception:
+                                ai_review_markdown += ("\n\n> ⚠️ The rewrite stage was unavailable — apply the "
+                                    "findings above manually, or re-scan to retry.")
+                    except Exception:
+                        # Reasoning model unavailable (e.g. preview-quota 429) — degrade to the
+                        # single-stage fast-model review below so the file is still covered.
+                        fix_route = True
+                        think_note = "\n\n> ℹ️ The reasoning model was unavailable — this review ran on the fast model instead."
 
-                # Advisory notes only — do NOT fold the rewrite back into the working code.
-                notes_part = raw_ai_markdown.split("### 🛠️ Final Refactored Code")[0].strip()
-                ai_review_markdown = notes_part or "### 💡 Advanced Optimizations\nSee the AI Optimized tab for the suggested rewrite."
+                if fix_route:
+                    try:
+                        ai_response_obj = review_code_with_gemini(
+                            filename, pre_cleaned_code, repo_context, live_schema,
+                            bq_error=must_fix_note,
+                            resolve_placeholders=(sql_unresolved and not sql_syntax_error_msg),
+                            advisory_only=advisory_only)
+                    except Exception as _ai_err:
+                        # AI unavailable (e.g. 429 rate limit). Degrade gracefully below — never fail the
+                        # whole file; the deterministic linter result is still valid.
+                        ai_failed = _ai_err
+                        ai_response_obj = DummyResponse("")
+                    raw_ai_markdown = ai_response_obj.text or ""
+                    try:
+                        if ai_response_obj.usage_metadata:
+                            tokens_used += ai_response_obj.usage_metadata.total_token_count
+                    except AttributeError:
+                        pass
+                    truncated = _response_was_truncated(ai_response_obj)
+                    model_used = GEMINI_MODEL
 
-                if advisory_only:
-                    ai_review_markdown += (f"\n\n> ℹ️ This file is large ({line_count} lines); the AI gave "
-                        "line-referenced advice instead of a full rewrite. Apply the points above, or ask the "
-                        "Architect to rewrite a specific section.")
-                else:
-                    # Re-lint the AI's suggestion so it still meets the deterministic rules.
+                    if not advisory_only:
+                        suggested_code = extract_refactored_code(raw_ai_markdown)
+                        # RETRY once at the MAX budget if the rewrite came back truncated or empty. The
+                        # file already fits (advisory threshold), so giving the model all the room it needs
+                        # almost always yields the COMPLETE rewrite — this is what keeps the AI tab present
+                        # instead of withholding the fix the user actually needs.
+                        if ai_failed is None and (truncated or not suggested_code.strip()):
+                            try:
+                                retry_obj = review_code_with_gemini(
+                                    filename, pre_cleaned_code, repo_context, live_schema,
+                                    bq_error=must_fix_note,
+                                    resolve_placeholders=(sql_unresolved and not sql_syntax_error_msg),
+                                    max_output_tokens=AI_MAX_OUTPUT_TOKENS)
+                                retry_md = retry_obj.text or ""
+                                retry_code = extract_refactored_code(retry_md)
+                                try:
+                                    if retry_obj.usage_metadata:
+                                        tokens_used += retry_obj.usage_metadata.total_token_count
+                                except AttributeError:
+                                    pass
+                                if retry_code.strip():
+                                    raw_ai_markdown, suggested_code = retry_md, retry_code
+                                    truncated = _response_was_truncated(retry_obj)
+                            except Exception:
+                                pass   # a retry failure is non-fatal — keep the first response
+                        suggested_code = _strip_line_gutter(suggested_code)
+
+                    # Advisory notes only — do NOT fold the rewrite back into the working code.
+                    notes_part = raw_ai_markdown.split("### 🛠️ Final Refactored Code")[0].strip()
+                    ai_review_markdown = (notes_part or "### 💡 Advanced Optimizations\nSee the AI Optimized tab "
+                                          "for the suggested rewrite.") + think_note
+                    if advisory_only:
+                        ai_review_markdown += (f"\n\n> ℹ️ This file is large ({line_count} lines); the AI gave "
+                            "line-referenced advice instead of a full rewrite. Apply the points above, or ask the "
+                            "Architect to rewrite a specific section.")
+
+                # SHARED post-processing for any suggested rewrite (either route): re-lint it, then
+                # show it only if it's complete (not truncated / not catastrophically short) and differs.
+                if suggested_code.strip() and not advisory_only:
                     suggested_code, _ = process_file_locally(filename, suggested_code, schema_meta)
-
-                    # Show the rewrite unless it's clearly TRUNCATED (finish_reason MAX_TOKENS, or a
-                    # catastrophic shortfall). A complete-but-shorter refactor IS shown — that's the fix.
                     safe = (not truncated) and _ai_rewrite_is_safe(pre_cleaned_code, suggested_code, ext)
-                    if suggested_code.strip() and suggested_code.strip() != pre_cleaned_code.strip() and safe:
+                    if suggested_code.strip() != pre_cleaned_code.strip() and safe:
                         ai_optimized_code = suggested_code
-
                         # If the AI was repairing a syntax error or filling structural placeholders,
                         # re-validate its suggestion so the user can see whether it now passes BigQuery.
                         if filename.endswith('.sql') and (sql_syntax_error_msg or sql_unresolved) and not _has_structural_placeholders(suggested_code):
                             fixed_metrics = perform_bq_dry_run(suggested_code)
                             if fixed_metrics.get("valid"):
                                 local_linter_issues.append("AI Fix Available: A corrected, BigQuery-valid version is ready in the ✨ AI Optimized tab.")
-                    elif suggested_code.strip() and not safe:
-                        # Still truncated even after the max-budget retry — withhold the partial diff
-                        # but tell the user exactly why and what knob to turn.
+                    elif not safe:
                         ai_review_markdown += ("\n\n> ⚠️ The AI's full rewrite was withheld because it was still "
                             f"truncated for this file even at the maximum output budget ({AI_MAX_OUTPUT_TOKENS} "
                             "tokens). Raise `AI_MAX_OUTPUT_TOKENS`, or ask the Architect to rewrite one section at a time.")
@@ -1141,7 +1274,7 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
             "airflow_tasks": py_analysis,
             "scorecard": scorecard,
             # Which Gemini model actually handled this file (0-token files never call one).
-            "model": (model or GEMINI_MODEL) if tokens_used else None
+            "model": model_used if tokens_used else None
         }
 
     except Exception as e:
