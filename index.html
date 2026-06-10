@@ -81,10 +81,13 @@
             content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
             border: 5px solid transparent; border-bottom-color: #0f172a; z-index: 70; pointer-events: none;
         }
-        /* Maximize / minimize the code panel */
-        .code-maximized { position: fixed !important; inset: 12px !important; z-index: 9998 !important; margin: 0 !important;
-            display: flex !important; flex-direction: column; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.45); }
-        .code-maximized .code-view { height: auto !important; flex: 1 1 auto; min-height: 0; }
+        /* Maximize / minimize the code panel — opens as a centered modal. The big spread box-shadow
+           (0 0 0 100vmax) dims the whole page AROUND the panel without a separate backdrop element,
+           so there's no z-index/stacking-context fight. View heights are set in JS so Monaco fills. */
+        .code-maximized { position: fixed !important; inset: 16px !important; z-index: 9998 !important; margin: 0 !important;
+            border-radius: 14px !important; overflow: hidden !important;
+            box-shadow: 0 0 0 100vmax rgba(15,23,42,0.55), 0 25px 50px -12px rgba(0,0,0,0.5);
+            animation: fadeIn 0.15s ease-out; }
         .maxbtn .icon-min { display: none; }
         .code-maximized .maxbtn .icon-max { display: none; }
         .code-maximized .maxbtn .icon-min { display: inline; }
@@ -324,9 +327,10 @@
             
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div class="group relative" id="dropdown-container-repo">
-                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">GitHub Repository</label>
+                    <label class="flex items-center gap-1.5 text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5"><svg class="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"></path></svg>GitHub Repository</label>
                     <div class="relative">
-                        <input type="text" id="repo" onfocus="showDropdown('repo')" oninput="filterDropdown('repo')" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl p-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-medium transition-colors" value="Kau51ubh/code-reviewer" placeholder="org/repo">
+                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 pointer-events-none"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"></path></svg></span>
+                        <input type="text" id="repo" onfocus="showDropdown('repo')" oninput="filterDropdown('repo')" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl pl-9 pr-9 py-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-medium transition-colors" value="Kau51ubh/code-reviewer" placeholder="org/repo">
                         <button onclick="toggleDropdownEvent(event, 'repo')" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                         </button>
@@ -335,9 +339,10 @@
                 </div>
 
                 <div class="group relative" id="dropdown-container-branch">
-                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">Feature Branch</label>
+                    <label class="flex items-center gap-1.5 text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5"><svg class="w-3.5 h-3.5 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Feature Branch</label>
                     <div class="relative">
-                        <input type="text" id="branch" onfocus="showDropdown('branch')" oninput="filterDropdown('branch')" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-brand-600 dark:text-brand-400 rounded-xl p-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-mono font-semibold transition-colors" value="release-v1" placeholder="Search or select branch...">
+                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-brand-500 pointer-events-none"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg></span>
+                        <input type="text" id="branch" onfocus="showDropdown('branch')" oninput="filterDropdown('branch')" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-brand-600 dark:text-brand-400 rounded-xl pl-9 pr-9 py-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-mono font-semibold transition-colors" value="release-v1" placeholder="Search or select branch...">
                         <button onclick="toggleDropdownEvent(event, 'branch')" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                         </button>
@@ -346,9 +351,10 @@
                 </div>
 
                 <div class="group relative" id="dropdown-container-base_branch">
-                    <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1">Base Branch</label>
+                    <label class="flex items-center gap-1.5 text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1.5"><svg class="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg>Base Branch</label>
                     <div class="relative">
-                        <input type="text" id="base_branch" onfocus="showDropdown('base_branch')" oninput="filterDropdown('base_branch')" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-xl p-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-mono transition-colors" value="main" placeholder="Search or select base branch...">
+                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 pointer-events-none"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></svg></span>
+                        <input type="text" id="base_branch" onfocus="showDropdown('base_branch')" oninput="filterDropdown('base_branch')" class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-xl pl-9 pr-9 py-2.5 focus:bg-white dark:focus:bg-slate-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none sm:text-sm font-mono transition-colors" value="main" placeholder="Search or select base branch...">
                         <button onclick="toggleDropdownEvent(event, 'base_branch')" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                         </button>
@@ -901,6 +907,14 @@
                     }
                 }, 50);
             }
+
+            // If the panel is maximized, re-fit the freshly-shown view to the full height
+            // (the AI-Optimized sub-header is only measurable once its view is visible).
+            const box = document.getElementById('codeblock-' + fileId);
+            if (box && box.classList.contains('code-maximized')) {
+                sizeMaximizedViews(box, true);
+                relayoutEditors(fileId);
+            }
         };
 
         window.applyOptimization = function(fileId) {
@@ -1329,82 +1343,74 @@
                 document.getElementById('actualTokens').textContent = '0';
                 document.getElementById('actualTime').textContent = '0.0s';
 
-                for (let i = 0; i < plan.length; i++) {
-                    const { file: currentFile, key: cacheKey, willSkip } = plan[i];
-
-                    if (willSkip) {
-                        // No new commit since the last run → skip entirely and do NOT render it.
-                        skippedCount++;
-                        startLoadingText(`No new commit — skipping ${currentFile.filename} (${skippedCount} skipped)`);
-                        continue;
-                    }
-
-                    processedCount++;
-                    const scanLabel = diffRun ? 'Diff scan' : 'Scanning';
-                    startLoadingText(`${scanLabel} [${processedCount}/${toProcessCount}]: ${currentFile.filename}`);
+                // Send one file to the backend; on any failure return a clear error card so a single
+                // bad file never aborts the run. (Backend already degrades AI 429s to a linter result.)
+                async function processOneFile(currentFile) {
                     const processPayload = {
                         filename: currentFile.filename,
-                        // In Diff Only mode we review just the changed lines (feature vs main).
-                        content: contentFor(currentFile),
+                        content: contentFor(currentFile),   // Diff Only → just the changed lines
                         sha: currentFile.sha,
                         scope: diffRun ? 'diff' : 'full',
                         repo_context: `The following files are also part of this PR context: ${repoContextStr}`,
                         repo_name: repoVal,
                         use_pro: !!window.useProModel
                     };
-
-                    // Per-file fault tolerance: one bad file must NOT abort the whole run.
-                    let fileResult;
                     try {
-                        const processResponse = await fetch(PROCESS_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(processPayload) });
-                        if (processResponse.status === 401) { window.location.href = '/'; return; }
-                        fileResult = await processResponse.json();
-                        if (!processResponse.ok) throw new Error(fileResult.error || `Server returned ${processResponse.status}`);
+                        const resp = await fetch(PROCESS_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(processPayload) });
+                        if (resp.status === 401) { window.location.href = '/'; throw new Error('Not authenticated'); }
+                        const r = await resp.json();
+                        if (!resp.ok) throw new Error(r.error || `Server returned ${resp.status}`);
+                        return r;
                     } catch (err) {
-                        // Render a clear error card for this file and keep going.
-                        errorCount++;
-                        fileResult = {
+                        return {
                             filename: currentFile.filename,
                             unit_test_fixes: [`Processing error — this file could not be reviewed: ${err.message}`],
                             ai_review: `### 💡 Advanced Optimizations\n⚠️ This file could not be processed: ${err.message}`,
-                            linter_code: contentFor(currentFile) || '',
-                            ai_optimized_code: '',
-                            bq_metrics: null,
+                            linter_code: contentFor(currentFile) || '', ai_optimized_code: '', bq_metrics: null,
                             original_code: contentFor(currentFile) || '',
                             scorecard: { performance: 0, cost_efficiency: 0, security: 0, compliance: 0 },
-                            tokens: 0, time_taken: 0, bq_bytes: 0, cost: 0,
-                            _error: true
+                            tokens: 0, time_taken: 0, bq_bytes: 0, cost: 0, _error: true
                         };
                     }
-                    fileResult._cached = false;
-                    // Carry the raw git diff (vs base branch) + run mode so the UI can show "what changed".
-                    fileResult.patch = currentFile.patch || '';
-                    fileResult.review_scope = window.runMode;
+                }
 
-                    // Only freshly-processed files add to the token/time/cost totals.
+                // Tally a finished result, cache it, and render its card (in file order).
+                let firstRendered = false;
+                function finalizeAndRender(p, fileResult) {
+                    fileResult._cached = false;
+                    fileResult.patch = p.file.patch || '';   // raw git diff (vs base) so the UI can show "what changed"
+                    fileResult.review_scope = window.runMode;
                     actualTokens += fileResult.tokens || 0;
                     actualTime += fileResult.time_taken || 0;
                     totalBytes += fileResult.bq_bytes || 0;
                     totalCost += fileResult.cost || 0;
-                    if ((fileResult.tokens || 0) > 0) aiFileCount++;  // files that actually spent AI tokens
-
-                    // Cache only successful results (don't cache an error so a re-run retries it).
-                    if (!fileResult._error) runCache[cacheKey] = { sha: currentFile.sha || '', result: fileResult };
-
-                    if (processedCount === 1 && fileResult.user_email) {
+                    if ((fileResult.tokens || 0) > 0) aiFileCount++;
+                    if (fileResult._error) errorCount++;
+                    // Cache only successful results (don't cache an error, so a re-run retries it).
+                    if (!fileResult._error) runCache[p.key] = { sha: p.file.sha || '', result: fileResult };
+                    if (!firstRendered && fileResult.user_email) {
                         const u = formatUserIdentity(fileResult.user_email);
                         const emailEl = document.getElementById('user-badge-email');
-                        emailEl.innerText = u.display;
-                        emailEl.title = u.title;
+                        emailEl.innerText = u.display; emailEl.title = u.title;
                         document.getElementById('user-badge-initial').innerText = u.initial;
                     }
-
-                    // Live progress on the loading screen (final totals are shown in the Run Summary popup).
                     document.getElementById('actualTokens').textContent = actualTokens.toLocaleString();
                     document.getElementById('actualTime').textContent = actualTime.toFixed(1) + 's';
                     document.getElementById('actualFiles').textContent = `${processedCount} / ${toProcessCount}`;
+                    renderSingleFile(fileResult, !firstRendered);
+                    firstRendered = true;
+                }
 
-                    renderSingleFile(fileResult, processedCount === 1);
+                // Run up to CONCURRENCY scans at once (huge speedup vs one-at-a-time), but keep the
+                // sidebar in file order by rendering each batch's results in order after it settles.
+                const CONCURRENCY = Math.max(1, parseInt(window.SCAN_CONCURRENCY || '4', 10));
+                const work = plan.filter(p => !p.willSkip);
+                skippedCount = plan.length - work.length;
+                for (let i = 0; i < work.length; i += CONCURRENCY) {
+                    const batch = work.slice(i, i + CONCURRENCY);
+                    startLoadingText(`${diffRun ? 'Diff scan' : 'Scanning'} ${Math.min(i + batch.length, work.length)} / ${toProcessCount} files…`);
+                    const settled = await Promise.all(batch.map(p => processOneFile(p.file)));
+                    settled.forEach((r, j) => { processedCount++; finalizeAndRender(batch[j], r); });
                 }
 
                 saveRunCache(runCache);
@@ -1867,7 +1873,7 @@
                         ${data.patch ? `<div id="view-${safeId}-changes" class="code-view w-full border-t border-slate-200 dark:border-slate-700/50 max-h-[400px] overflow-y-auto bg-white dark:bg-[#0f172a]" style="display: none;">${renderPatchHtml(data.patch)}</div>` : ''}
                         ${data.aiOptimizedCode ? `
                         <div id="view-${safeId}-optimized" class="code-view w-full border-t border-slate-200 dark:border-slate-700/50" style="display: none;">
-                            <div class="flex items-center justify-between gap-3 px-4 py-2 bg-purple-50/60 dark:bg-purple-900/20 border-b border-purple-100 dark:border-purple-900/40">
+                            <div class="opt-subheader flex items-center justify-between gap-3 px-4 py-2 bg-purple-50/60 dark:bg-purple-900/20 border-b border-purple-100 dark:border-purple-900/40">
                                 <p class="text-[0.7rem] text-purple-700 dark:text-purple-300 font-medium">Advisory only — left is the linter-fixed baseline, right is the AI suggestion. Nothing is changed until you apply it.</p>
                                 <button onclick="applyOptimization('${safeId}')" class="shrink-0 text-[0.65rem] font-bold uppercase tracking-wider bg-purple-600 hover:bg-purple-700 text-white px-3 py-1.5 rounded-lg shadow-sm transition-colors cursor-pointer">Apply to Editor</button>
                             </div>
@@ -1925,32 +1931,47 @@
             }
         };
 
-        // --- Maximize / minimize the code panel (expands to near-fullscreen, Esc to close) ---
+        // --- Maximize / minimize the code panel (opens as a modal over a backdrop, Esc to close) ---
         function relayoutEditors(safeId) {
-            setTimeout(() => {
+            // Two passes: immediately and after the modal transition, so Monaco picks up the new size.
+            [0, 80, 200].forEach(t => setTimeout(() => {
                 try { window.dispatchEvent(new Event('resize')); } catch (e) {}
-                ['', '-opt'].forEach(s => {
-                    const ed = (window.monacoEditors || {})[safeId + s] || (window.monacoDiffEditors || {})[safeId + s];
-                    if (ed && typeof ed.layout === 'function') ed.layout();
+                [(window.monacoEditors || {})[safeId],
+                 (window.monacoDiffEditors || {})[safeId],
+                 (window.monacoDiffEditors || {})[safeId + '-opt']].forEach(ed => {
+                    if (ed && typeof ed.layout === 'function') { try { ed.layout(); } catch (e) {} }
                 });
-            }, 60);
+            }, t));
+        }
+        function sizeMaximizedViews(box, maxed) {
+            const header = box.querySelector(':scope > div');           // top toolbar (dots + tabs + maximize)
+            const avail = box.clientHeight - (header ? header.offsetHeight : 48);
+            box.querySelectorAll('.code-view').forEach(v => {
+                v.style.height = maxed ? (avail + 'px') : '';            // concrete px so inner Monaco fills exactly
+            });
+            // The AI-Optimized view's Monaco container is fixed-height (not h-full) because of its
+            // advisory sub-header, so size it explicitly to fill the rest of the maximized panel.
+            const optC = box.querySelector('[id^="monaco-opt-container-"]');
+            if (optC) {
+                const sub = box.querySelector('.opt-subheader');
+                const subH = (sub && sub.offsetHeight) ? sub.offsetHeight : 40;
+                optC.style.height = maxed ? ((avail - subH) + 'px') : '';
+            }
         }
         window.toggleCodeMaximize = function(safeId) {
             const box = document.getElementById('codeblock-' + safeId);
             if (!box) return;
             const maxed = box.classList.toggle('code-maximized');
-            document.body.style.overflow = maxed ? 'hidden' : '';
+            document.body.style.overflow = maxed ? 'hidden' : '';   // stop the page scrolling behind the modal
             const btn = document.getElementById('maxbtn-' + safeId);
             if (btn) btn.setAttribute('data-tip', maxed ? 'Minimize' : 'Maximize');
+            sizeMaximizedViews(box, maxed);
             relayoutEditors(safeId);
         };
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 const open = document.querySelector('.code-maximized');
-                if (open) {
-                    const id = open.id.replace('codeblock-', '');
-                    toggleCodeMaximize(id);
-                }
+                if (open) toggleCodeMaximize(open.id.replace('codeblock-', ''));
             }
         });
 
