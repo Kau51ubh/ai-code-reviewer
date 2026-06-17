@@ -1421,17 +1421,24 @@
                     firstRendered = true;
                 }
 
-                // Run up to CONCURRENCY scans at once (huge speedup vs one-at-a-time), but keep the
-                // sidebar in file order by rendering each batch's results in order after it settles.
-                const CONCURRENCY = Math.max(1, parseInt(window.SCAN_CONCURRENCY || '4', 10));
+                // WORKER POOL: up to CONCURRENCY scans in flight at all times, and every file is
+                // rendered to the dashboard THE MOMENT it finishes (no batch barrier — one slow
+                // file can't hold back the others, and results stream in live).
+                const CONCURRENCY = Math.max(1, parseInt(window.SCAN_CONCURRENCY || '1', 10));
                 const work = plan.filter(p => !p.willSkip);
                 skippedCount = plan.length - work.length;
-                for (let i = 0; i < work.length; i += CONCURRENCY) {
-                    const batch = work.slice(i, i + CONCURRENCY);
-                    startLoadingText(`${diffRun ? 'Diff scan' : 'Scanning'} ${Math.min(i + batch.length, work.length)} / ${toProcessCount} files…`);
-                    const settled = await Promise.all(batch.map(p => processOneFile(p.file)));
-                    settled.forEach((r, j) => { processedCount++; finalizeAndRender(batch[j], r); });
+                let nextIdx = 0;
+                async function worker() {
+                    while (nextIdx < work.length) {
+                        const p = work[nextIdx++];
+                        startLoadingText(`${diffRun ? 'Diff scan' : 'Scanning'}: ${p.file.filename}`);
+                        const r = await processOneFile(p.file);
+                        processedCount++;
+                        startLoadingText(`${diffRun ? 'Diff scan' : 'Scanning'} ${processedCount} / ${toProcessCount} done — ${p.file.filename}`);
+                        finalizeAndRender(p, r);
+                    }
                 }
+                await Promise.all(Array.from({ length: Math.min(CONCURRENCY, work.length) }, () => worker()));
 
                 saveRunCache(runCache);
                 document.getElementById('loading').style.display = 'none';
@@ -1978,6 +1985,8 @@
             const avail = box.clientHeight - (header ? header.offsetHeight : 48);
             box.querySelectorAll('.code-view').forEach(v => {
                 v.style.height = maxed ? (avail + 'px') : '';            // concrete px so inner Monaco fills exactly
+                v.style.maxHeight = maxed ? (avail + 'px') : '';         // override max-h-[400px] on the changes view
+                v.style.overflowY = maxed ? 'auto' : '';
             });
             // The AI-Optimized view's Monaco container is fixed-height (not h-full) because of its
             // advisory sub-header, so size it explicitly to fill the rest of the maximized panel.
