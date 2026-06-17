@@ -1100,15 +1100,16 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
                 truncated = False
                 think_note = ""
 
-                # ROUTE A — REPAIR (single call, always the FAST model): there is a concrete syntax
-                # error or schema-fillable placeholder. Repairing is coding work — the reasoning
-                # model adds nothing here, so we never pay its rates for it.
-                fix_route = bool(must_fix_note) or (sql_unresolved and not sql_syntax_error_msg)
+                # ROUTE A — REPAIR/DEFAULT (single call, always the FAST model): concrete syntax
+                # error, schema-fillable placeholder, OR no Pro toggle — the reasoning model adds
+                # nothing for ordinary optimization scans, so we never pay its rates by default.
+                fix_route = bool(must_fix_note) or (sql_unresolved and not sql_syntax_error_msg) or (not model)
 
                 if not fix_route:
-                    # ROUTE B — OPTIMIZE (two-stage): the reasoning model THINKS — terse, line-referenced
-                    # findings under a tiny output cap, never code — and ONLY if it found something does
-                    # the fast model CODE the rewrite. A "no changes" verdict costs one small call total.
+                    # ROUTE B — OPTIMIZE (two-stage, Pro toggle only): the reasoning model THINKS —
+                    # terse, line-referenced findings under a tiny output cap, never code — and ONLY
+                    # if it found something does the fast model CODE the rewrite. A "no changes"
+                    # verdict costs one small call total.
                     try:
                         findings, changes, t1 = pro_think(filename, pre_cleaned_code, live_schema, repo_context)
                         tokens_used += t1
@@ -1132,6 +1133,12 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
                         # single-stage fast-model review below so the file is still covered.
                         fix_route = True
                         think_note = "\n\n> ℹ️ The reasoning model was unavailable — this review ran on the fast model instead."
+
+                # When Pro is forced on a clean/auto-fixed file and the reasoning model found
+                # no changes, fall back to the flash model so the ✨ AI Optimized tab is still
+                # populated with the flash model's take.
+                if force_ai and not suggested_code.strip() and not advisory_only:
+                    fix_route = True
 
                 if fix_route:
                     try:
