@@ -442,8 +442,9 @@ def pre_process_sql(filename, content, schema=None):
         if re.search(r'\bSELECT\s+\*', stmt_upper):
             logs.append("Warning: 'SELECT *' detected. Columns should be explicitly listed to prevent schema-drift errors.")
 
-        # Catch missing ON in JOINs
-        if ' JOIN ' in stmt_upper and ' ON ' not in stmt_upper and 'CROSS JOIN' not in stmt_upper:
+        # Catch missing ON/USING in JOINs — use word-boundary regex so ON on its own line
+        # (e.g. after a closing paren) or USING keyword are both recognised correctly.
+        if ' JOIN ' in stmt_upper and not re.search(r'\b(?:ON|USING)\b', stmt_upper) and 'CROSS JOIN' not in stmt_upper:
             logs.append("Warning: JOIN detected without an 'ON' condition. Verify this is not an accidental Cartesian product.")
 
         # Missing or Bypassed WHERE in DELETE
