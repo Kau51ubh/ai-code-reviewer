@@ -1,5 +1,6 @@
 import os
-import time  
+import time
+import random
 import datetime
 import requests
 import json
@@ -100,8 +101,9 @@ GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flas
 AI_MAX_OUTPUT_TOKENS = int(os.environ.get("AI_MAX_OUTPUT_TOKENS", "32768"))
 AI_FULL_REWRITE_MAX_LINES = int(os.environ.get("AI_FULL_REWRITE_MAX_LINES", "1200"))
 # Retries (with backoff) for a rate-limited (429) Gemini call before giving up and degrading
-# gracefully to the linter-only result. Kept small so a sustained quota issue fails fast.
-AI_MAX_RETRIES = int(os.environ.get("AI_MAX_RETRIES", "1"))
+# gracefully to the linter-only result. A per-minute quota spike on a many-file run is transient,
+# so a few backed-off retries clear it without failing the file (a sustained outage still degrades).
+AI_MAX_RETRIES = int(os.environ.get("AI_MAX_RETRIES", "3"))
 
 
 def _parse_kv(raw):
@@ -193,10 +195,11 @@ def generate_ai(prompt, max_output_tokens=4096, model=None):
             if (GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != primary
                     and _is_model_unavailable(e)):
                 return _generate_with_model(GEMINI_FALLBACK_MODEL, prompt, capped)
-            # Rate-limited / quota (429) → brief exponential backoff, then retry. After the last
-            # attempt the error propagates so the caller can degrade gracefully (keep linter result).
+            # Rate-limited / quota (429) → exponential backoff with jitter, then retry. A per-minute
+            # quota refills within ~60s, so backing off clears most spikes. After the last attempt the
+            # error propagates so the caller can degrade gracefully (keep linter result).
             if _is_rate_limited(e) and attempt < AI_MAX_RETRIES:
-                time.sleep(min(8, 2 * (attempt + 1)))      # 2s, 4s, …
+                time.sleep(min(30, 2 ** (attempt + 1)) + random.uniform(0, 1))   # ~2s, 4s, 8s, 16s …
                 continue
             raise
 
@@ -647,9 +650,10 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_sc
     common_header = (
         "You are a senior code reviewer. A deterministic linter already fixed all mechanical issues "
         "(syntax, parameterization, naming, datatypes) — do NOT re-report those. Surface ONLY genuine "
-        "enhancements (correctness, performance, scalability). Be terse: at most ~6 short bullets, no "
-        "preamble. Never invent table/column names — use only the code and the schema below. If nothing "
-        "is worth changing, output EXACTLY: \"No advanced architectural bottlenecks detected.\"\n"
+        "enhancements (correctness, performance, scalability). Be terse: at most 4 short bullets, each "
+        "one line, no preamble, no restating the rules or the code. Never invent table/column names — "
+        "use only the code and the schema below. If nothing is worth changing, output EXACTLY: "
+        "\"No advanced architectural bottlenecks detected.\"\n"
     )
 
     if fn.endswith('.sql'):
@@ -741,7 +745,7 @@ def review_code_with_gemini(filename, pre_cleaned_code, repo_context="", live_sc
     Format your output strictly with these two headings:
 
     ### 💡 Advanced Optimizations
-    (Place ALL your explanations, reasoning, and context here.)
+    (≤4 terse one-line bullets. No preamble, no reasoning essays, no restating the code.)
 
     ### 🛠️ Final Refactored Code
     (Output the COMPLETE corrected file as ONE raw code block — every line, start to finish, nothing
@@ -964,7 +968,7 @@ def prepare_review():
         return jsonify({"error": str(e)}), 500
 
 def review_one_file(filename, content, scope='full', repo_context='No additional context.',
-                    repo_name='unknown', user_email='unknown-user@company.com', model=None):
+                    repo_name='unknown', user_email='unknown-user@company.com', model=None, force=False):
     """Core review pipeline for a single file. Returns the result dict (same shape the
     /process_file route returns). Reused by both the web UI and the CI/PR endpoint."""
     try:
@@ -1076,11 +1080,14 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
             # CRITICAL and not runnable — the linter already flagged it, so we spend NO AI on it
             # (don't pay tokens to re-state a deterministic check, and don't optimize a blocked
             # query). It re-evaluates on the next scan once the human fills the stub in.
-            # The UI's Pro toggle passes a model override — an explicit, paid opt-in to a thorough
-            # expert review. When it's set, run the AI REGARDLESS of the red-flag gate, so even a
-            # clean / fully-auto-fixed file gets the Pro model's opinion (and an AI-Optimized tab if
-            # it finds anything). Human-blocked critical files still skip — fix those first.
-            force_ai = bool(model)
+            # `force` is an EXPLICIT per-file opt-in (the single-file PRO re-scan) — only then do we
+            # run the AI REGARDLESS of the red-flag gate, so even a clean / fully-auto-fixed file
+            # gets an opinion (and an AI-Optimized tab if it finds anything). A BATCH run never sets
+            # force, so a 16-file scan only spends tokens on files the gate genuinely escalates —
+            # that's what keeps the run cheap and off the rate limit. `model` (Pro) only picks WHICH
+            # model runs WHEN the AI runs; it no longer forces the AI on by itself.
+            # Human-blocked critical files still skip — fix those first.
+            force_ai = bool(force)
             human_blocked = filename.endswith('.sql') and _has_human_required_placeholders(pre_cleaned_code)
             should_use_ai = (not human_blocked) and (
                              force_ai
@@ -1312,6 +1319,9 @@ def process_single_file():
     try:
         # UI Flash→Pro toggle: when use_pro is set, this scan uses the higher-quality model.
         model = GEMINI_PRO_MODEL if data.get('use_pro') else None
+        # `force_ai` is sent ONLY by the deliberate single-file re-scan — it runs the AI even on a
+        # clean/auto-fixed file. A batch run omits it, so the per-file red-flag gate decides there
+        # (no tokens on clean files, no rate-limit storm).
         result = review_one_file(
             filename, content,
             scope=(data.get('scope') or 'full').lower(),
@@ -1319,6 +1329,7 @@ def process_single_file():
             repo_name=data.get('repo_name', 'unknown'),
             user_email=get_user_identity(),
             model=model,
+            force=bool(data.get('force_ai')),
         )
         return jsonify(result), 200
     except Exception as e:
