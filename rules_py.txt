@@ -1,3 +1,0 @@
-Specific Refactoring Tasks:
-- DAG Config: Ensure `catchup=False` and `max_active_runs=1` are explicitly defined.
-- Execution: Ensure the workflow strictly uses `gcloud ssh` execution commands.
