@@ -1,4 +1,0 @@
-Specific Refactoring Tasks:
-- Error Handling: Ensure robust Return Code (RC) checks exist after execution commands.
-- BQ Operations: Refactor direct `bq query` commands into enterprise wrapper functions.
-- Architecture: Ensure the script avoids local unix file processing bottlenecks.
