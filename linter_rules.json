@@ -1,0 +1,545 @@
+{
+  "_readme": [
+    "EDITABLE RULE REGISTRY for the deterministic linter (linter.py). Read by rules_engine.py.",
+    "",
+    "HOW TO EDIT:",
+    "  * message  - the text shown to the user. {name} style tokens are filled in by the linter;",
+    "               keep them if you want the dynamic value (e.g. the column or line number).",
+    "  * enabled  - set to false to switch a rule OFF completely (its fix/warning is skipped).",
+    "  * severity - advisory label only: critical | warning | fix | info.",
+    "  * settings - shared constants; an 'env' var (if set in the environment) overrides 'value'.",
+    "",
+    "RULE TYPES:",
+    "  * pattern  - fully data-driven: the engine runs the regex/fix from THIS file (custom_rules).",
+    "  * builtin  - the detection/transform LOGIC lives in linter.py (see code_ref) because it is",
+    "               too structural to express as a single regex. You can still edit its message,",
+    "               toggle 'enabled', and tune any exposed params here.",
+    "",
+    "ADD A NEW RULE: append an object to custom_rules (see the disabled examples there) and set",
+    "  enabled=true. No Python changes needed. lang = sql | py | ksh | any.",
+    "",
+    "DO NOT rename the 'id' fields of builtin rules — linter.py looks them up by id."
+  ],
+
+  "settings": {
+    "sql_dataset_map": {
+      "value": "AEDW_DB=DB_AEDWD2,STGPARTN_DB=DB_STG2PARTND2,SRC_DB=DB_SRCD2",
+      "env": "SQL_DATASET_MAP",
+      "description": "Single source of truth for ${TEMPLATE_VAR}=RealDataset. The linter parameterizes each RealDataset to its ${VAR}; main.py resolves ${VAR} back to RealDataset. These MUST stay in sync. Format: VAR=Dataset,VAR2=Dataset2."
+    },
+    "sql_param_columns": {
+      "value": "etl_batch_sk",
+      "env": "SQL_PARAM_COLUMNS",
+      "description": "Comma-separated audit/batch columns that must always be parameterized to ${UPPER(name)} (e.g. etl_batch_sk -> ${ETL_BATCH_SK}). Empty disables."
+    },
+    "env_path_segments": {
+      "value": "dev,dev1,dev2,qa,uat,stg,stage,prd,prod",
+      "env": "ENV_PATH_SEGMENTS",
+      "description": "Path segments that should never be hardcoded; matched only as a complete /segment/ and rewritten to /${env}/. Affects both SQL string literals and KSH paths."
+    }
+  },
+
+  "secret_patterns": {
+    "GCP API Key": "(?i)AIza[0-9A-Za-z-_]{35}",
+    "AWS Access Key": "(?i)AKIA[0-9A-Z]{16}",
+    "Generic Password/Secret": "(?i)(password|secret|token)[\\s=:]+['\"][^'\"]{6,}['\"]"
+  },
+
+  "rules": {
+    "secrets": [
+      {
+        "id": "secret-found",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "critical",
+        "code_ref": "linter.scan_for_secrets",
+        "message": "CRITICAL SECURITY ALERT: Found potential {name} in code. File processing halted.",
+        "description": "Shift-left secret scan. {name} is the matched pattern's label from secret_patterns above. A hit halts all further processing of the file. Edit/add patterns in the secret_patterns block."
+      }
+    ],
+
+    "sql": [
+      {
+        "id": "sql-null-cmp",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 0a)",
+        "message": "Fix: Rewrote {n} NULL comparison(s) ('= NULL' / '!= NULL') to IS NULL / IS NOT NULL — '=' never matches NULL.",
+        "description": "Rewrites col = NULL / col != NULL to IS NULL / IS NOT NULL. {n} = number of comparisons rewritten."
+      },
+      {
+        "id": "sql-doubled-comma",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 0b)",
+        "message": "Fix: Removed doubled comma(s) in a column/value list.",
+        "description": "Collapses 'a,, b' to 'a, b'."
+      },
+      {
+        "id": "sql-trailing-comma-from",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 0b)",
+        "message": "Fix: Removed trailing comma before FROM (invalid in BigQuery).",
+        "description": "Removes a dangling comma immediately before the FROM keyword."
+      },
+      {
+        "id": "sql-trailing-comma-paren",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 0b)",
+        "message": "Fix: Removed trailing comma before a closing parenthesis.",
+        "description": "Removes a dangling comma immediately before ')'."
+      },
+      {
+        "id": "sql-env-path",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 0c)",
+        "message": "Fix: Parameterized hardcoded environment path segment(s) to '/${env}/'.",
+        "description": "Rewrites hardcoded env path segments (see settings.env_path_segments) inside SQL string literals to /${env}/."
+      },
+      {
+        "id": "sql-unbalanced-quote",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "critical",
+        "code_ref": "linter.pre_process_sql (step 0d)",
+        "message": "Critical: Unbalanced single quote detected — a string literal is missing its closing quote.",
+        "description": "Advisory only (cannot be auto-fixed): flags an odd number of single quotes."
+      },
+      {
+        "id": "sql-dataset-param",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 1)",
+        "message": "Fix: Parameterized hardcoded dataset '{real_ds}' to '{template}'.",
+        "description": "Replaces a hardcoded BigQuery dataset with its ${VAR}. {real_ds}/{template} come from settings.sql_dataset_map."
+      },
+      {
+        "id": "sql-timestamp-to-datetime",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 2)",
+        "message": "Fix: Replaced 'TIMESTAMP()' with 'DATETIME()'.",
+        "description": "Converts TIMESTAMP(...) function calls to DATETIME(...)."
+      },
+      {
+        "id": "sql-minus-typo",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 3)",
+        "message": "Fix: Corrected '{col}-<number>' (minus instead of equals) and parameterized to '{param}'.",
+        "description": "Fixes the common 'col-123' typo (minus used instead of '=') for a configured param column and parameterizes it. {col}=column, {param}=${COL}."
+      },
+      {
+        "id": "sql-param-columns",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 3)",
+        "message": "Fix: Parameterized hardcoded '{col}' occurrences to '{param}'.",
+        "description": "Parameterizes a configured audit/batch column (settings.sql_param_columns) to ${COL}. {col}=column, {param}=${COL}."
+      },
+      {
+        "id": "sql-merge-inserts",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 4)",
+        "message": "Fix: Merged multiple INSERT VALUES statements into a single batch statement.",
+        "description": "Collapses consecutive INSERT INTO <same table> VALUES statements into one multi-row INSERT."
+      },
+      {
+        "id": "sql-stray-semicolon",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 4b)",
+        "message": "Fix: Removed a stray semicolon that incorrectly split a boolean/WHERE clause.",
+        "description": "Removes a ';' that wrongly split a statement before an AND/OR fragment."
+      },
+      {
+        "id": "sql-select-star",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "warning",
+        "code_ref": "linter.pre_process_sql (step 5, per-statement)",
+        "message": "Warning: 'SELECT *' detected. Columns should be explicitly listed to prevent schema-drift errors.",
+        "description": "Flags SELECT * (advisory, no auto-fix)."
+      },
+      {
+        "id": "sql-join-no-on",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "warning",
+        "code_ref": "linter.pre_process_sql (step 5, per-statement)",
+        "message": "Warning: JOIN detected without an 'ON' condition. Verify this is not an accidental Cartesian product.",
+        "description": "Flags a JOIN with no ON/USING (and not an explicit CROSS JOIN)."
+      },
+      {
+        "id": "sql-delete-no-where",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "critical",
+        "code_ref": "linter.pre_process_sql (step 5, per-statement)",
+        "message": "Critical Fix: Appended mandatory WHERE clause placeholder to a DELETE statement.",
+        "description": "Appends a <MISSING_FILTER_REQUIRED> placeholder to a DELETE with no WHERE. NOTE: the placeholder token itself is a code/main.py invariant and is not edited here."
+      },
+      {
+        "id": "sql-delete-bypass",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "critical",
+        "code_ref": "linter.pre_process_sql (step 5, per-statement)",
+        "message": "Critical Fix: Overwrote dangerous global bypass in DELETE statement with safe placeholder.",
+        "description": "Replaces WHERE TRUE / WHERE 1=1 in a DELETE with the safe placeholder."
+      },
+      {
+        "id": "sql-update-no-where",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "critical",
+        "code_ref": "linter.pre_process_sql (step 5, per-statement)",
+        "message": "Critical Fix: Appended mandatory WHERE clause placeholder to an UPDATE statement.",
+        "description": "Appends a <MISSING_FILTER_REQUIRED> placeholder to an UPDATE with no WHERE."
+      },
+      {
+        "id": "sql-update-bypass",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "critical",
+        "code_ref": "linter.pre_process_sql (step 5, per-statement)",
+        "message": "Critical Fix: Overwrote dangerous global bypass in UPDATE statement with safe placeholder.",
+        "description": "Replaces WHERE TRUE / WHERE 1=1 in an UPDATE with the safe placeholder."
+      },
+      {
+        "id": "sql-insert-select-cols",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 5, per-statement)",
+        "message": "Fix: Extracted columns from SELECT and injected explicit Target Column List.",
+        "description": "For INSERT ... SELECT with no target column list, derives the list from the SELECT."
+      },
+      {
+        "id": "sql-insert-values-cols",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 5, per-statement)",
+        "message": "Fix: Injected placeholder Target Column List ({val_count} cols) into INSERT for {table_name} — replace col1, col2… with the real column names.",
+        "description": "For INSERT ... VALUES with no target column list, injects col1..colN placeholders. {val_count}=column count, {table_name}=target table."
+      },
+      {
+        "id": "sql-final-semicolon",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_sql (step 6)",
+        "message": "Fix: Appended the missing statement-terminating semicolon to the final statement.",
+        "description": "Adds a trailing ';' to the last code line if missing."
+      }
+    ],
+
+    "schema": [
+      {
+        "id": "schema-col-spacing",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.apply_schema_fixes (B)",
+        "message": "Fix: Corrected column name spacing to '{col}' using live schema.",
+        "description": "Uses the live BigQuery schema to rejoin a spaced column name (e.g. 'customer name' -> 'customer_name'). {col}=correct name."
+      },
+      {
+        "id": "schema-collapse-spaced",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.apply_schema_fixes (B2)",
+        "message": "Fix: Collapsed an accidental space inside the column identifier '{w1} {w2}' -> '{w1}_{w2}'.",
+        "description": "Schema-independent: collapses a space inside an identifier sitting before a comparison operator. {w1}/{w2}=the two halves."
+      },
+      {
+        "id": "schema-string-quote",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.apply_schema_fixes (C)",
+        "message": "Fix: Quoted string literal for STRING column '{col}' using live schema datatype.",
+        "description": "Quotes a bare literal compared against a STRING column. {col}=column name."
+      },
+      {
+        "id": "schema-numeric-unquote",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.apply_schema_fixes (C)",
+        "message": "Fix: Removed quotes around numeric literal for {ctype} column '{col}' using live schema datatype.",
+        "description": "Drops quotes around a numeric literal compared against a numeric column. {ctype}=datatype, {col}=column."
+      },
+      {
+        "id": "schema-date-quote",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.apply_schema_fixes (C)",
+        "message": "Fix: Quoted date literal for {ctype} column '{col}' using live schema datatype.",
+        "description": "Quotes a bare date literal compared against a DATE/DATETIME/TIMESTAMP column."
+      },
+      {
+        "id": "schema-between-numeric",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.apply_schema_fixes (D)",
+        "message": "Fix: Removed quotes around BETWEEN bounds for {ctype} column '{col}' using live schema datatype.",
+        "description": "Normalizes quoted numeric bounds inside a BETWEEN range for a numeric column."
+      },
+      {
+        "id": "schema-between-date",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.apply_schema_fixes (D)",
+        "message": "Fix: Quoted BETWEEN date bounds for {ctype} column '{col}' using live schema datatype.",
+        "description": "Quotes bare date bounds inside a BETWEEN range for a date column."
+      },
+      {
+        "id": "schema-unknown-col",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "warning",
+        "code_ref": "linter.apply_schema_fixes (E)",
+        "message": "Warning: Column '{col}' is not in the live schema for this table — its filter was neutralized (TRUE). Verify the column name.",
+        "description": "WHERE-clause guard: a predicate column missing from the live schema is neutralized to TRUE and flagged. Only runs when a live schema was actually fetched."
+      },
+      {
+        "id": "schema-string-filter-wrap",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.apply_schema_fixes (F)",
+        "message": "Fix: Wrapped STRING filter on '{ref}' with UPPER(TRIM()) for case-insensitive matching.",
+        "description": "Wraps a STRING-column filter predicate as UPPER(TRIM(col)) <op> UPPER(lit) for case-insensitive matching. {ref}=column reference."
+      }
+    ],
+
+    "py": [
+      {
+        "id": "py-reindent",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_py (step 0)",
+        "message": "Fix: Normalized inconsistent indentation so the module parses (statement re-aligned to its block level).",
+        "description": "Only applied when the file does not compile AND the re-indented candidate does. Never reformats already-valid code."
+      },
+      {
+        "id": "py-dag-name-suffix",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_py (step 1)",
+        "message": "Fix: Automatically appended mandatory '_VM' suffix to DAG_NAME.",
+        "description": "Ensures DAG_NAME ends with the mandatory '_VM' suffix."
+      },
+      {
+        "id": "py-timedelta-import",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_py (step 2)",
+        "message": "Fix: Injected missing 'timedelta' import into datetime module.",
+        "description": "Adds timedelta to a 'from datetime import datetime' line when timedelta is used but not imported."
+      },
+      {
+        "id": "py-remove-catchup-args",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_py (step 3)",
+        "message": "Fix: Removed 'catchup' from default_args (parameter belongs in DAG definition, not args).",
+        "description": "Strips a 'catchup' key from default_args; the correct one is injected into DAG() (see py-inject-catchup)."
+      },
+      {
+        "id": "py-inject-catchup",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_py (step 4)",
+        "message": "Fix: Injected 'catchup=False' into DAG definition.",
+        "description": "Injects catchup=False into the DAG() call when absent. The injected token is a code invariant; edit message/enabled here."
+      },
+      {
+        "id": "py-inject-max-active",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_py (step 4)",
+        "message": "Fix: Injected 'max_active_runs=1' concurrency limit into DAG definition.",
+        "description": "Injects max_active_runs=1 into the DAG() call when absent."
+      },
+      {
+        "id": "py-inject-tags",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_py (step 4)",
+        "message": "Fix: Injected 'tags=[\"interface\"]' array for workspace categorization.",
+        "description": "Injects tags=[\"interface\"] into the DAG() call when absent."
+      },
+      {
+        "id": "py-stale-jobid",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_py (step 5)",
+        "message": "Fix: Updated stale job-ID prefix(es) {ids} to '{correct_id}' in variable names to match DAG_NAME.",
+        "description": "Rewrites stale job-ID prefixes in variable/task names to match DAG_NAME's prefix. {ids}=sorted list found, {correct_id}=target prefix."
+      },
+      {
+        "id": "py-no-start-date",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "warning",
+        "code_ref": "linter.pre_process_py (step 6)",
+        "message": "Warning: DAG defines no 'start_date' — Airflow requires one (set it in DAG() or default_args).",
+        "description": "Advisory: a DAG with no start_date. No auto-fix (needs a human-chosen value)."
+      },
+      {
+        "id": "py-no-schedule",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "warning",
+        "code_ref": "linter.pre_process_py (step 6)",
+        "message": "Warning: DAG defines no schedule ('schedule_interval'/'schedule') — it will never run automatically.",
+        "description": "Advisory: a DAG with no schedule. No auto-fix."
+      },
+      {
+        "id": "py-bare-except",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "warning",
+        "code_ref": "linter.pre_process_py (step 6)",
+        "message": "Warning: Bare 'except:' swallows ALL errors (incl. SystemExit) — catch specific exceptions instead.",
+        "description": "Advisory: flags a bare 'except:' clause."
+      }
+    ],
+
+    "ksh": [
+      {
+        "id": "ksh-shebang",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_ksh",
+        "message": "Fix: Inserted missing '#!/bin/ksh' shebang at the top of the script.",
+        "description": "Inserts a '#!/bin/ksh' shebang when the first line is not one. The shebang text itself is a code invariant."
+      },
+      {
+        "id": "ksh-env-path",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "fix",
+        "code_ref": "linter.pre_process_ksh",
+        "message": "Fix: Parameterized hardcoded environment path segment(s) to '/${env}/'.",
+        "description": "Rewrites hardcoded env path segments (settings.env_path_segments) in non-comment lines to /${env}/."
+      },
+      {
+        "id": "ksh-raw-bq-query",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "issue",
+        "code_ref": "linter.pre_process_ksh",
+        "message": "Line {line:03d}: Forbidden raw 'bq query' invocation found. Refactored to wrapper.",
+        "description": "Replaces a raw 'bq query' call with the enterprise execute_bq_wrapper. {line}=line number."
+      },
+      {
+        "id": "ksh-secret-echo",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "critical",
+        "code_ref": "linter.pre_process_ksh",
+        "message": "Line {line:03d}: Severe Security Breach. Masked explicit secret.",
+        "description": "Masks an echoed password/secret/token literal. {line}=line number."
+      },
+      {
+        "id": "ksh-dangerous-rm",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "critical",
+        "code_ref": "linter.pre_process_ksh",
+        "message": "Line {line:03d}: Dangerous deletion pattern detected. Wrapped in safety check.",
+        "description": "Wraps a 'rm -rf $VAR' in an emptiness guard so an unset variable can't delete '/'. {line}=line number."
+      },
+      {
+        "id": "ksh-strict-mode",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "warning",
+        "code_ref": "linter.pre_process_ksh",
+        "message": "Warning: Script lacks strict error handling. Injected 'set -e' and 'set -o pipefail'.",
+        "description": "Injects 'set -e' and 'set -o pipefail' when neither is present."
+      },
+      {
+        "id": "ksh-rc-check",
+        "type": "builtin",
+        "enabled": true,
+        "severity": "warning",
+        "code_ref": "linter.pre_process_ksh",
+        "message": "Warning: 'execute_bq_wrapper' is called but its return code is never checked — add an RC=$? check after each execution.",
+        "description": "Advisory: the BQ wrapper is invoked but '$?'/'RC=' is never inspected afterwards."
+      }
+    ]
+  },
+
+  "custom_rules": [
+    {
+      "id": "custom-example-sql-nolock-disabled",
+      "lang": "sql",
+      "enabled": false,
+      "type": "pattern",
+      "scope": "file",
+      "severity": "warning",
+      "pattern": "\\bWITH\\s*\\(\\s*NOLOCK\\s*\\)",
+      "flags": ["i"],
+      "message": "Warning: WITH (NOLOCK) is a SQL Server hint and is not valid in BigQuery — remove it.",
+      "description": "EXAMPLE (disabled). Detection-only file-scope rule. Set enabled=true to activate. Copy this block to add your own."
+    },
+    {
+      "id": "custom-example-py-print-disabled",
+      "lang": "py",
+      "enabled": false,
+      "type": "pattern",
+      "scope": "line",
+      "severity": "info",
+      "pattern": "^\\s*print\\s*\\(",
+      "flags": [],
+      "message": "Line {line:03d}: Use the logging module instead of print() in production DAGs.",
+      "description": "EXAMPLE (disabled). Line-scope rule: reported once per matching line. {line} and {text} are available in the message."
+    },
+    {
+      "id": "custom-example-ksh-tmp-fix-disabled",
+      "lang": "ksh",
+      "enabled": false,
+      "type": "pattern",
+      "scope": "file",
+      "severity": "fix",
+      "fix": [
+        { "find": "/tmp/", "replace": "${TMPDIR}/", "flags": [] }
+      ],
+      "message": "Fix: Replaced hardcoded /tmp/ with ${TMPDIR}/.",
+      "description": "EXAMPLE (disabled). Shows an auto-fix rule: the ordered 'fix' list applies regex search/replace to the file. A fix-only rule (no 'pattern') logs 'message' once when a fix actually changes the code. Add a 'pattern' if you want detection-only logging too."
+    }
+  ]
+}
