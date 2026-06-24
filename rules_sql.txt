@@ -1,6 +1,0 @@
-Specific Refactoring Tasks:
-- Target Column List: If missing, explicitly define the target column list for INSERT statements.
-- Filter Requirement: Ensure UPDATE/DELETE statements have a WHERE clause.
-- Multiple INSERTs: Consolidate multiple INSERT statements for a single table into one INSERT with multiple VALUES rows.
-- Environments: Parameterize hardcoded environment paths (e.g., /load/dev2/ to /load/${env}/).
-- Deep Optimization: Check for query execution plan bottlenecks, join order optimization, and scaling issues.
