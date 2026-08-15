@@ -83,7 +83,49 @@ client = genai.Client(vertexai=True, location="us-central1")
 bq_client = bigquery.Client()
 
 BQ_ANALYTICS_TABLE = os.environ.get("BQ_ANALYTICS_TABLE", "code_review_analytics.scan_history")
+# Separate table for push/commit governance events — every push, and every CRITICAL bypass
+# with the developer's justification. Feeds the monthly manager audit report.
+COMMIT_AUDIT_TABLE = os.environ.get("COMMIT_AUDIT_TABLE", "code_review_analytics.commit_audit")
 FINOPS_MAX_BYTES_THRESHOLD = int(os.environ.get("FINOPS_MAX_BYTES_THRESHOLD", 10 * 1024 * 1024 * 1024))
+
+# AI token pricing, per 1M tokens. Output tokens cost several times more than input, so a single
+# flat rate understates real spend. We price input and output separately and, because only the
+# TOTAL token count is recorded per review, apply a configurable output share to blend an
+# effective per-1M rate. Defaults approximate Gemini Flash; override any of these per deployment.
+AI_PRICE_INPUT_PER_1M = float(os.environ.get("AI_PRICE_INPUT_PER_1M", "0.30"))
+AI_PRICE_OUTPUT_PER_1M = float(os.environ.get("AI_PRICE_OUTPUT_PER_1M", "2.50"))
+AI_OUTPUT_TOKEN_SHARE = float(os.environ.get("AI_OUTPUT_TOKEN_SHARE", "0.35"))
+AI_COST_PER_1M_TOKENS = (AI_PRICE_INPUT_PER_1M * (1 - AI_OUTPUT_TOKEN_SHARE)
+                         + AI_PRICE_OUTPUT_PER_1M * AI_OUTPUT_TOKEN_SHARE)
+
+
+def estimate_ai_cost(total_tokens):
+    """Blended-rate cost for a token count when the input/output split is unknown (e.g. the
+    pre-run estimate). Prefer estimate_ai_cost_split() whenever the split is available."""
+    return (total_tokens or 0) / 1_000_000 * AI_COST_PER_1M_TOKENS
+
+
+def estimate_ai_cost_split(input_tokens, output_tokens):
+    """Exact cost from the ACTUAL input/output token split, priced separately."""
+    return ((input_tokens or 0) / 1_000_000 * AI_PRICE_INPUT_PER_1M
+            + (output_tokens or 0) / 1_000_000 * AI_PRICE_OUTPUT_PER_1M)
+
+
+def _usage_split(resp):
+    """(input_tokens, output_tokens) from a Gemini response's usage_metadata; (0, 0) if absent.
+    prompt_token_count = input; candidates + any thinking tokens = output. Falls back to counting
+    total as input if only the total is present."""
+    try:
+        u = getattr(resp, "usage_metadata", None)
+        if not u:
+            return 0, 0
+        inp = getattr(u, "prompt_token_count", 0) or 0
+        out = (getattr(u, "candidates_token_count", 0) or 0) + (getattr(u, "thoughts_token_count", 0) or 0)
+        if not inp and not out:
+            return (getattr(u, "total_token_count", 0) or 0), 0
+        return inp, out
+    except Exception:
+        return 0, 0
 # Models. These default to the newer Gemini 3.x line shown in your Model Garden, but the EXACT
 # api id matters — open the model in Model Garden → "Use this model"/sample code and copy the
 # `model="..."` string, then override the env var if it differs (preview ids are often
@@ -600,14 +642,16 @@ def calculate_optimization_scores(filename, code, linter_count):
         "compliance": max(style, 30)
     }
 
-def log_to_bq_analytics(repo, filename, ext, tokens, cost, bypassed, local_issues, bq_bytes, has_secrets, user_email, finops_status):
+def log_to_bq_analytics(repo, filename, ext, tokens, cost, bypassed, local_issues, bq_bytes, has_secrets, user_email, finops_status, input_tokens=0, output_tokens=0):
     try:
-        rows_to_insert = [{
+        row = {
             "timestamp": datetime.datetime.utcnow().isoformat(),
             "repo": repo,
             "filename": filename,
             "file_type": ext,
             "tokens_used": tokens,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
             "cost": cost,
             "ai_bypassed": bypassed,
             "local_issues_count": local_issues,
@@ -615,10 +659,86 @@ def log_to_bq_analytics(repo, filename, ext, tokens, cost, bypassed, local_issue
             "has_secrets": has_secrets,
             "user_email": user_email or "unknown-user@company.com",
             "finops_status": finops_status or "PASSED"
-        }]
-        bq_client.insert_rows_json(BQ_ANALYTICS_TABLE, rows_to_insert)
+        }
+        errors = bq_client.insert_rows_json(BQ_ANALYTICS_TABLE, [row])
+        if errors:
+            # Table predates the input_tokens/output_tokens columns — retry without them so the
+            # total is still recorded. Add the columns (see README) to capture the split.
+            row.pop("input_tokens", None)
+            row.pop("output_tokens", None)
+            bq_client.insert_rows_json(BQ_ANALYTICS_TABLE, [row])
     except Exception as e:
         print(f"Failed to log to BQ Analytics: {e}")
+
+def _normalize_code(s):
+    """Whitespace-insensitive view of a file's body, so 'no changes made' is judged on
+    real content — trailing spaces, CRLF vs LF, and leading/trailing blank lines don't
+    count as an edit. Used by the push gate to detect an unmodified file."""
+    if not s:
+        return ""
+    lines = [ln.rstrip() for ln in str(s).replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
+def log_commit_audit(repo, branch, filename, status, changes_made, bypassed, dev_comment, user_email):
+    """Record a push to the commit-audit table. A bypass (CRITICAL findings pushed with no
+    fix) is stored with the developer's justification so the monthly report can surface who
+    proceeded without fixing. Best-effort — never blocks the push if logging fails."""
+    try:
+        rows_to_insert = [{
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "repo": repo,
+            "branch": branch,
+            "filename": filename,
+            "file_type": (filename.rsplit('.', 1)[-1] if '.' in filename else ""),
+            "review_status": status or "unknown",
+            "changes_made": bool(changes_made),
+            "bypassed_critical": bool(bypassed),
+            "dev_comment": (dev_comment or "")[:2000],
+            "user_email": user_email or "unknown-user@company.com",
+        }]
+        bq_client.insert_rows_json(COMMIT_AUDIT_TABLE, rows_to_insert)
+    except Exception as e:
+        print(f"Failed to log commit audit: {e}")
+
+
+def _recheck_status(filename, code):
+    """Re-derive the review status from the ACTUAL code being pushed, so a file the developer just
+    fixed (via AI or by hand) is recognised as resolved and clears the push gate. Deterministic —
+    linter + BigQuery dry-run only, no AI tokens. Returns 'critical' | 'issues' | 'clean', or None
+    if it couldn't run (caller then falls back to the reviewed status)."""
+    try:
+        is_sql = filename.endswith('.sql')
+        schema_meta = extract_tables_and_metadata(code) if is_sql else {}
+        cleaned, issues = process_file_locally(filename, code, schema_meta)
+        low = [str(i).lower() for i in (issues or [])]
+        critical = any(re.search(r'critical|security|finops|dangerous|mandatory where', i) for i in low)
+        errors = any(('error' in i or 'critical' in i or 'security' in i) for i in low)
+        # unresolved structural placeholders the linter injects are must-fix (critical)
+        if any(p in cleaned for p in ("<MISSING_FILTER_REQUIRED>", "<JOIN_CONDITION_REQUIRED>")):
+            critical = True
+        if is_sql:
+            try:
+                m = perform_bq_dry_run(cleaned)
+                if not m.get('valid'):
+                    errors = True                                   # ANY dry-run failure is at least an issue
+                elif m.get('bytes_processed', 0) > FINOPS_MAX_BYTES_THRESHOLD:
+                    critical = True                                 # cost-guardrail breach is critical
+            except Exception:
+                pass
+        if critical:
+            return 'critical'
+        if errors:
+            return 'issues'
+        return 'clean'
+    except Exception as e:
+        print(f"recheck_status failed: {e}")
+        return None
+
 
 def extract_refactored_code(markdown_text):
     parts = re.split(r'### 🛠️ Final Refactored Code', markdown_text, flags=re.IGNORECASE)
@@ -801,12 +921,7 @@ def pro_think(filename, pre_cleaned_code, live_schema, repo_context, model=None)
     )
     resp = generate_ai(prompt, max_output_tokens=1024, model=(model or GEMINI_PRO_MODEL))
     text = (resp.text or "").strip()
-    tokens = 0
-    try:
-        if resp.usage_metadata:
-            tokens = resp.usage_metadata.total_token_count
-    except AttributeError:
-        pass
+    tin, tout = _usage_split(resp)
     up = text.upper()
     if 'NO_CHANGES' in up or 'NO ADVANCED ARCHITECTURAL BOTTLENECKS' in up:
         changes = False
@@ -815,7 +930,7 @@ def pro_think(filename, pre_cleaned_code, live_schema, repo_context, model=None)
     else:
         changes = bool(text)        # no explicit verdict — assume findings imply changes
     findings = re.sub(r'(?im)^\s*VERDICT:.*$', '', text).strip()
-    return findings, changes, tokens
+    return findings, changes, tin, tout
 
 
 def flash_code(filename, pre_cleaned_code, findings, live_schema, model=None):
@@ -836,25 +951,18 @@ def flash_code(filename, pre_cleaned_code, findings, live_schema, model=None):
     )
     budget = min(AI_MAX_OUTPUT_TOKENS, _estimate_tokens(pre_cleaned_code) * 3 + 2048)
     resp = generate_ai(prompt, max_output_tokens=budget, model=(model or GEMINI_MODEL))
-    tokens = 0
-    try:
-        if resp.usage_metadata:
-            tokens = resp.usage_metadata.total_token_count
-    except AttributeError:
-        pass
+    tin, tout = _usage_split(resp)
     code = _strip_line_gutter(extract_refactored_code(resp.text or ""))
     truncated = _response_was_truncated(resp)
     if truncated or not code.strip():
         retry = generate_ai(prompt, max_output_tokens=AI_MAX_OUTPUT_TOKENS, model=(model or GEMINI_MODEL))
-        try:
-            if retry.usage_metadata:
-                tokens += retry.usage_metadata.total_token_count
-        except AttributeError:
-            pass
+        rin, rout = _usage_split(retry)
+        tin += rin
+        tout += rout
         retry_code = _strip_line_gutter(extract_refactored_code(retry.text or ""))
         if retry_code.strip():
             code, truncated = retry_code, _response_was_truncated(retry)
-    return code, tokens, truncated
+    return code, tin, tout, truncated
 
 
 def _read_first(*relpaths):
@@ -952,7 +1060,7 @@ def prepare_review():
                 
         estimated_time = 2.0 + (ai_files * 10.0) + ((file_count - ai_files) * 0.2)
         estimated_tokens = int(total_ai_chars * 0.3) + (ai_files * 1600)
-        estimated_cost = (estimated_tokens / 1000000) * 0.15
+        estimated_cost = estimate_ai_cost(estimated_tokens)
         
         return jsonify({
             "files": files_to_review,
@@ -986,6 +1094,8 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
         ai_review_markdown = ""
         ai_optimized_code = ""   # AI suggestion shown in its own tab; never auto-applied.
         tokens_used = 0
+        tokens_in = 0            # actual input (prompt) tokens across every AI call for this file
+        tokens_out = 0           # actual output (completion) tokens
         is_bypassed = False
         finops_status = "PASSED"
         model_used = None   # which model(s) actually reviewed this file (None = deterministic only)
@@ -1118,8 +1228,9 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
                     # if it found something does the fast model CODE the rewrite. A "no changes"
                     # verdict costs one small call total.
                     try:
-                        findings, changes, t1 = pro_think(filename, pre_cleaned_code, live_schema, repo_context)
-                        tokens_used += t1
+                        findings, changes, t1i, t1o = pro_think(filename, pre_cleaned_code, live_schema, repo_context)
+                        tokens_in += t1i
+                        tokens_out += t1o
                         model_used = f"{GEMINI_PRO_MODEL} (think)"
                         ai_review_markdown = ("### 💡 Advanced Optimizations\n"
                                               + (findings or "✓ No advanced architectural bottlenecks detected."))
@@ -1129,8 +1240,9 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
                                 "rewrite one section at a time.")
                         elif changes:
                             try:
-                                suggested_code, t2, truncated = flash_code(filename, pre_cleaned_code, findings, live_schema)
-                                tokens_used += t2
+                                suggested_code, t2i, t2o, truncated = flash_code(filename, pre_cleaned_code, findings, live_schema)
+                                tokens_in += t2i
+                                tokens_out += t2o
                                 model_used += f" + {GEMINI_MODEL} (code)"
                             except Exception:
                                 ai_review_markdown += ("\n\n> ⚠️ The rewrite stage was unavailable — apply the "
@@ -1160,11 +1272,9 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
                         ai_failed = _ai_err
                         ai_response_obj = DummyResponse("")
                     raw_ai_markdown = ai_response_obj.text or ""
-                    try:
-                        if ai_response_obj.usage_metadata:
-                            tokens_used += ai_response_obj.usage_metadata.total_token_count
-                    except AttributeError:
-                        pass
+                    _ti, _to = _usage_split(ai_response_obj)
+                    tokens_in += _ti
+                    tokens_out += _to
                     truncated = _response_was_truncated(ai_response_obj)
                     model_used = GEMINI_MODEL
 
@@ -1183,11 +1293,9 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
                                     max_output_tokens=AI_MAX_OUTPUT_TOKENS)
                                 retry_md = retry_obj.text or ""
                                 retry_code = extract_refactored_code(retry_md)
-                                try:
-                                    if retry_obj.usage_metadata:
-                                        tokens_used += retry_obj.usage_metadata.total_token_count
-                                except AttributeError:
-                                    pass
+                                _rti, _rto = _usage_split(retry_obj)
+                                tokens_in += _rti
+                                tokens_out += _rto
                                 if retry_code.strip():
                                     raw_ai_markdown, suggested_code = retry_md, retry_code
                                     truncated = _response_was_truncated(retry_obj)
@@ -1227,6 +1335,8 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
                 if ai_failed is not None:
                     is_bypassed = True
                     tokens_used = 0
+                    tokens_in = 0
+                    tokens_out = 0
                     ai_optimized_code = ""
                     if _is_rate_limited(ai_failed):
                         ai_review_markdown = ("### 💡 Advanced Optimizations\n"
@@ -1263,11 +1373,12 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
                     ai_review_markdown = f"{heading}\n\n{window_advisory}\n\n{ai_review_markdown}"
 
         time_taken = round(time.time() - start_time, 2)
-        estimated_cost = (tokens_used / 1000000) * 0.15
+        tokens_used = tokens_in + tokens_out
+        estimated_cost = estimate_ai_cost_split(tokens_in, tokens_out)
 
         scorecard = calculate_optimization_scores(filename, pre_cleaned_code, len(local_linter_issues))
 
-        log_to_bq_analytics(repo_name, filename, filename.split('.')[-1], tokens_used, estimated_cost, is_bypassed, len(local_linter_issues), bq_bytes, has_secrets, user_email, finops_status)
+        log_to_bq_analytics(repo_name, filename, filename.split('.')[-1], tokens_used, estimated_cost, is_bypassed, len(local_linter_issues), bq_bytes, has_secrets, user_email, finops_status, tokens_in, tokens_out)
 
         return {
             "filename": filename,
@@ -1277,6 +1388,8 @@ def review_one_file(filename, content, scope='full', repo_context='No additional
             "ai_optimized_code": ai_optimized_code,
             "bq_metrics": bq_metrics,
             "tokens": tokens_used,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
             "time_taken": time_taken,
             "original_code": content,
             "user_email": user_email,
@@ -1463,6 +1576,159 @@ def get_audit_history():
             }
         ]), 200
 
+def _mock_dashboard():
+    """Realistic sample so the dashboard renders in a demo even when BigQuery is unreachable
+    or the analytics tables are empty."""
+    users = [
+        {"user_email": "kaustubh.dev@ibx.com",   "reviews": 42, "tokens": 128400, "cost": 0.0192, "issues": 18, "clean_reviews": 27, "commits": 31, "bypasses": 3, "quality": 64},
+        {"user_email": "sme.reviewer@ibx.com",   "reviews": 28, "tokens": 61200,  "cost": 0.0091, "issues": 6,  "clean_reviews": 22, "commits": 24, "bypasses": 0, "quality": 79},
+        {"user_email": "data.eng@ibx.com",       "reviews": 15, "tokens": 40300,  "cost": 0.0060, "issues": 11, "clean_reviews": 7,  "commits": 12, "bypasses": 2, "quality": 47},
+    ]
+    return {
+        "kpis": {"commits": 67, "bypasses": 5, "bypass_rate": 7.5, "tokens": 229900,
+                 "tokens_in": 172400, "tokens_out": 57500, "cost": round(estimate_ai_cost_split(172400, 57500), 4),
+                 "reviews": 85, "finops_blocks": 4, "secrets": 1, "quality": 66},
+        "status_dist": {"clean": 56, "issues": 25, "critical": 4},
+        "users": users,
+        "recent_bypasses": [
+            {"ts": "2026-07-07 09:14", "user_email": "kaustubh.dev@ibx.com", "filename": "05_perfect_query.sql", "review_status": "issues",   "dev_comment": "Region column deprecated downstream — handled in ETL layer."},
+            {"ts": "2026-07-06 17:42", "user_email": "data.eng@ibx.com",     "filename": "load_claims.ksh",      "review_status": "critical", "dev_comment": "Temp-table cleanup done by nightly job; hotfix release."},
+        ],
+        "is_mock": True,
+    }
+
+
+@app.route('/audit/dashboard', methods=['GET'])
+@login_required
+def audit_dashboard():
+    """Aggregated governance metrics for the dashboard: commits, bypasses, tokens, cost, and a
+    derived code-quality score (share of reviews that came back fully clean). Reads scan_history
+    (tokens/quality) and commit_audit (commits/bypasses); degrades to a mock on any failure."""
+    try:
+        proj = bq_client.project
+        # --- review analytics: tokens (input/output split), quality signal, per user ---
+        def _rev_sql(with_split):
+            split_cols = ("SUM(COALESCE(input_tokens,0)) AS tokens_in, "
+                          "SUM(COALESCE(output_tokens,0)) AS tokens_out,") if with_split else ""
+            return f"""
+                SELECT user_email,
+                       COUNT(*) AS reviews,
+                       SUM(tokens_used) AS tokens,
+                       {split_cols}
+                       SUM(local_issues_count) AS issues,
+                       SUM(CASE WHEN finops_status IS NOT NULL AND finops_status != 'PASSED' THEN 1 ELSE 0 END) AS finops_blocks,
+                       SUM(CASE WHEN has_secrets THEN 1 ELSE 0 END) AS secrets,
+                       SUM(CASE WHEN local_issues_count = 0
+                                 AND (finops_status IS NULL OR finops_status = 'PASSED')
+                                 AND NOT COALESCE(has_secrets, FALSE) THEN 1 ELSE 0 END) AS clean_reviews
+                FROM `{proj}.{BQ_ANALYTICS_TABLE}`
+                GROUP BY user_email
+            """
+        # Prefer the input/output split; fall back if the table predates those columns.
+        try:
+            rows = list(bq_client.query(_rev_sql(True)))
+            has_split = True
+        except Exception:
+            rows = list(bq_client.query(_rev_sql(False)))
+            has_split = False
+        users = {}
+        for r in rows:
+            email = r["user_email"] or "unknown-user@company.com"
+            users[email] = {
+                "user_email": email,
+                "reviews": int(r["reviews"] or 0),
+                "tokens": int(r["tokens"] or 0),
+                "tokens_in": int(r["tokens_in"] or 0) if has_split else 0,
+                "tokens_out": int(r["tokens_out"] or 0) if has_split else 0,
+                "issues": int(r["issues"] or 0),
+                "clean_reviews": int(r["clean_reviews"] or 0),
+                "finops_blocks": int(r["finops_blocks"] or 0),
+                "secrets": int(r["secrets"] or 0),
+                "commits": 0, "bypasses": 0,
+            }
+
+        # --- commit audit: commits + bypasses per user (table may not exist yet) ---
+        status_dist = {"clean": 0, "issues": 0, "critical": 0}
+        recent_bypasses = []
+        try:
+            com_sql = f"""
+                SELECT user_email,
+                       COUNT(*) AS commits,
+                       SUM(CASE WHEN bypassed_critical THEN 1 ELSE 0 END) AS bypasses,
+                       SUM(CASE WHEN review_status = 'critical' THEN 1 ELSE 0 END) AS critical,
+                       SUM(CASE WHEN review_status = 'issues' THEN 1 ELSE 0 END) AS issues_pushed
+                FROM `{proj}.{COMMIT_AUDIT_TABLE}`
+                GROUP BY user_email
+            """
+            for r in bq_client.query(com_sql):
+                email = r["user_email"] or "unknown-user@company.com"
+                u = users.setdefault(email, {"user_email": email, "reviews": 0, "tokens": 0,
+                                             "tokens_in": 0, "tokens_out": 0,
+                                             "issues": 0, "clean_reviews": 0, "finops_blocks": 0, "secrets": 0,
+                                             "commits": 0, "bypasses": 0})
+                u["commits"] = int(r["commits"] or 0)
+                u["bypasses"] = int(r["bypasses"] or 0)
+                crit = int(r["critical"] or 0); iss = int(r["issues_pushed"] or 0)
+                status_dist["critical"] += crit
+                status_dist["issues"] += iss
+                status_dist["clean"] += max(0, int(r["commits"] or 0) - crit - iss)
+
+            bp_sql = f"""
+                SELECT FORMAT_TIMESTAMP('%Y-%m-%d %H:%M', timestamp) AS ts,
+                       user_email, filename, review_status, dev_comment
+                FROM `{proj}.{COMMIT_AUDIT_TABLE}`
+                WHERE bypassed_critical = TRUE
+                ORDER BY timestamp DESC LIMIT 10
+            """
+            recent_bypasses = [dict(r) for r in bq_client.query(bp_sql)]
+        except Exception as ce:
+            print(f"commit_audit not available: {ce}")
+
+        if not users:
+            return jsonify(_mock_dashboard()), 200
+
+        # per-user quality = share of reviews that were fully clean
+        for u in users.values():
+            u["quality"] = round(100 * u["clean_reviews"] / u["reviews"]) if u["reviews"] else 100
+
+        total_reviews = sum(u["reviews"] for u in users.values())
+        total_clean = sum(u["clean_reviews"] for u in users.values())
+        total_commits = sum(u["commits"] for u in users.values())
+        total_bypasses = sum(u["bypasses"] for u in users.values())
+        # if commit_audit gave no status split, approximate the distribution from review signals
+        if sum(status_dist.values()) == 0:
+            status_dist = {"clean": total_clean,
+                           "issues": max(0, total_reviews - total_clean - sum(u["finops_blocks"] + u["secrets"] for u in users.values())),
+                           "critical": sum(u["finops_blocks"] + u["secrets"] for u in users.values())}
+
+        total_tokens = sum(u["tokens"] for u in users.values())
+        total_in = sum(u["tokens_in"] for u in users.values())
+        total_out = sum(u["tokens_out"] for u in users.values())
+        # Exact cost from the input/output split when we have it; otherwise blended on the total
+        # (older rows without the split, priced at the configured blended rate).
+        total_cost = estimate_ai_cost_split(total_in, total_out) if (total_in or total_out) \
+            else estimate_ai_cost(total_tokens)
+        kpis = {
+            "commits": total_commits,
+            "bypasses": total_bypasses,
+            "bypass_rate": round(100 * total_bypasses / total_commits, 1) if total_commits else 0.0,
+            "tokens": total_tokens,
+            "tokens_in": total_in,
+            "tokens_out": total_out,
+            "cost": round(total_cost, 4),
+            "reviews": total_reviews,
+            "finops_blocks": sum(u["finops_blocks"] for u in users.values()),
+            "secrets": sum(u["secrets"] for u in users.values()),
+            "quality": round(100 * total_clean / total_reviews) if total_reviews else 100,
+        }
+        user_list = sorted(users.values(), key=lambda u: u["commits"], reverse=True)
+        return jsonify({"kpis": kpis, "status_dist": status_dist, "users": user_list,
+                        "recent_bypasses": recent_bypasses, "is_mock": False}), 200
+    except Exception as e:
+        print(f"audit_dashboard failed, serving mock: {e}")
+        return jsonify(_mock_dashboard()), 200
+
+
 @app.route('/validate_bq', methods=['POST'])
 @login_required
 def validate_bq_route():
@@ -1491,18 +1757,62 @@ def validate_bq_route():
 @app.route('/commit', methods=['POST'])
 @login_required
 def commit_to_github():
-    data = request.get_json()
-    repo_name, branch, filename, new_content, token = data.get('repo'), data.get('branch'), data.get('filename'), data.get('code'), load_secret("GITHUB_TOKEN")
-    if not all([repo_name, branch, filename, new_content, token]): return jsonify({"error": "Missing parameters or GITHUB_TOKEN."}), 400
+    data = request.get_json() or {}
+    repo_name, branch, filename, new_content = data.get('repo'), data.get('branch'), data.get('filename'), data.get('code')
+    token = load_secret("GITHUB_TOKEN")
+    original_content = data.get('original_code')       # code as it was first reviewed (for change detection)
+    dev_comment = (data.get('dev_comment') or '').strip()      # justification supplied to push past the gate
+    commit_message = (data.get('commit_message') or '').strip()  # editable message from the push dialog
+    user_email = get_user_identity()
+    if not all([repo_name, branch, filename, new_content, token]):
+        return jsonify({"error": "Missing parameters or GITHUB_TOKEN."}), 400
+
+    # --- Unresolved-findings gate ---------------------------------------------
+    # Goal: a file the developer FIXED clears the gate; the SAME file pushed unchanged still
+    # demands a justification. `original_content` is the linter-fixed baseline shown after review
+    # (not the raw file), so an untouched push compares equal.
+    client_status = (data.get('status') or '').lower()   # what the review showed (critical/issues/…)
+    changes_made = True if original_content is None else \
+        (_normalize_code(new_content) != _normalize_code(original_content))
+    if not changes_made:
+        # Pushing the exact reviewed code — trust the review's verdict (guarantees the block shows).
+        status = client_status
+    else:
+        # Code was edited — re-derive from the new code so a genuine fix clears the gate.
+        status = _recheck_status(filename, new_content) or client_status
+    is_critical = status == 'critical'
+    # A justification is required to push a file that STILL carries findings — issues or critical.
+    # It's recorded so managers can see who proceeded without fixing.
+    needs_justification = status in ("issues", "critical")
+    if needs_justification and not dev_comment:
+        return jsonify({
+            "requires_bypass": True,
+            "reason": "unresolved_findings",
+            "message": ("This file still has unresolved review findings. Enter a developer "
+                        "justification to push it anyway — it will be recorded in the audit trail."),
+        }), 409
 
     try:
         g = Github(token)
         repo = g.get_repo(repo_name)
         file_contents = repo.get_contents(filename, ref=branch)
-        repo.update_file(path=file_contents.path, message=f"Auto-refactor: Optimized {filename} via AI Architect", content=new_content, sha=file_contents.sha, branch=branch)
-        return jsonify({"success": True, "message": f"Successfully pushed {filename} to {branch}!"}), 200
+        commit_msg = commit_message or f"Update {filename} via AI Code Reviewer"
+        if needs_justification:
+            label = "CRITICAL" if is_critical else "ISSUES"
+            # Preserve the developer's own message, then append the recorded justification.
+            commit_msg = f"{commit_msg}\n\n[Review override · {label}] {user_email}: {dev_comment}"
+        repo.update_file(path=file_contents.path, message=commit_msg,
+                         content=new_content, sha=file_contents.sha, branch=branch)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+    # Governance audit — records every push, flags every justified override.
+    log_commit_audit(repo_name, branch, filename, status, changes_made, needs_justification, dev_comment, user_email)
+
+    if needs_justification:
+        return jsonify({"success": True, "bypassed": True,
+                        "message": f"Pushed {filename} to {branch} with a recorded justification."}), 200
+    return jsonify({"success": True, "message": f"Successfully pushed {filename} to {branch}!"}), 200
 
 @app.route('/chat', methods=['POST'])
 @login_required
