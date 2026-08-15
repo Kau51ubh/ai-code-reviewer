@@ -283,6 +283,10 @@
                 <button onclick="toggleAuditDrawer(true)" class="flex items-center gap-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 px-3.5 py-1.5 rounded-lg border border-emerald-200 dark:border-emerald-900/30 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-950 transition-colors cursor-pointer">
                     🔍 View Audit Trail
                 </button>
+                <button onclick="openAuditDashboard()" title="Audit & governance dashboard" class="flex items-center gap-2 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-400 px-3.5 py-1.5 rounded-lg border border-indigo-200 dark:border-indigo-900/30 text-xs font-semibold hover:bg-indigo-100 dark:hover:bg-indigo-950 transition-colors cursor-pointer">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                    Dashboard
+                </button>
                 <div class="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 pl-1 pr-2 py-1 rounded-full border border-slate-200 dark:border-slate-700">
                     <img id="user-badge-photo" src="" alt="" class="w-6 h-6 rounded-full object-cover shrink-0" style="display:none;">
                     <div class="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs font-bold shrink-0" id="user-badge-initial">U</div>
@@ -1210,12 +1214,24 @@
             const btn = document.getElementById('batchPushConfirmBtn');
             btn.disabled = true;
             btn.innerText = "Pushing...";
-            
-            for(let cb of checkboxes) {
-                await window.pushToGitHub(cb.value);
+
+            let pushed = 0, failed = 0;
+            const blocked = [];   // CRITICAL + unresolved — the server refuses these without a justification
+            for (let cb of checkboxes) {
+                try {
+                    const { response, data } = await window.commitFile(cb.value, '');
+                    if (response.status === 409 && data.requires_bypass) {
+                        blocked.push(window.fileDataStore[cb.value].filename);
+                        continue;
+                    }
+                    if (!response.ok) throw new Error(data.error || 'commit failed');
+                    pushed++;
+                } catch (e) { failed++; }
             }
-            
-            showToast("Batch push completed successfully!", "success");
+
+            if (pushed) showToast(`Pushed ${pushed} file(s) successfully.`, "success");
+            if (failed) showToast(`${failed} file(s) failed to push.`, "error");
+            if (blocked.length) showToast(`Skipped ${blocked.length} file(s) with unresolved findings — push each individually to add a justification: ${blocked.join(', ')}`, "error");
             btn.disabled = false;
             btn.innerText = "Commit Selected Files";
             window.closeBatchPushModal();
@@ -1550,27 +1566,344 @@
             } catch (error) { showToast("Error communicating with Architect.", "error"); }
         }
 
-        window.pushToGitHub = async function(safeId) {
-            const fileData = window.fileDataStore[safeId];
-            const currentCode = window.monacoEditors && window.monacoEditors[safeId] ? window.monacoEditors[safeId].getValue() : fileData.pureRefactoredCode;
-            showToast("Pushing to GitHub...", "info");
-            
+        // Whitespace-insensitive code compare — mirrors _normalize_code() on the server so the
+        // "no changes were made" check agrees on both sides.
+        function normalizeCodeForCompare(s) {
+            if (!s) return '';
+            let lines = String(s).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').map(l => l.replace(/\s+$/, ''));
+            while (lines.length && !lines[0].trim()) lines.shift();
+            while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+            return lines.join('\n');
+        }
+        function escHtml(s) { const d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML; }
+
+        // ===== Audit & Governance Dashboard =====
+        window.openAuditDashboard = async function() {
+            const existing = document.getElementById('auditDashOverlay');
+            if (existing) existing.remove();
+            const overlay = document.createElement('div');
+            overlay.id = 'auditDashOverlay';
+            overlay.className = 'fixed inset-0 z-[100] flex items-start justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto';
+            overlay.innerHTML = `
+                <div class="w-full max-w-4xl my-6 bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+                    <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between bg-gradient-to-r from-indigo-50 to-white dark:from-slate-800 dark:to-slate-800">
+                        <div>
+                            <h3 class="font-bold text-lg text-slate-900 dark:text-white flex items-center gap-2">
+                                <svg class="w-5 h-5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                                Audit &amp; Governance Dashboard
+                            </h3>
+                            <p id="dashSubtitle" class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Loading metrics…</p>
+                        </div>
+                        <button id="dashClose" class="p-2 rounded-lg text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        </button>
+                    </div>
+                    <div id="dashBody" class="px-6 py-6"><div class="text-center text-slate-400 py-20">Loading metrics…</div></div>
+                </div>`;
+            document.body.appendChild(overlay);
+            const close = () => overlay.remove();
+            overlay.querySelector('#dashClose').onclick = close;
+            overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
             try {
-                const response = await fetch('/commit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        repo: document.getElementById('repo').value,
-                        branch: document.getElementById('branch').value,
-                        filename: fileData.filename,
-                        code: currentCode
-                    })
-                });
-                
-                const data = await parseJsonResponse(response, 'commit');
-                if (!response.ok) throw new Error(data.error);
-                showToast(data.message, "success");
-            } catch (error) { showToast("Commit Failed: " + error.message, "error"); }
+                const resp = await fetch('/audit/dashboard');
+                const d = await parseJsonResponse(resp, 'dashboard');
+                if (!resp.ok) throw new Error(d.error || 'Failed to load');
+                renderAuditDashboard(overlay, d);
+            } catch (e) {
+                overlay.querySelector('#dashBody').innerHTML = `<div class="text-center text-red-500 py-20">Failed to load dashboard: ${escHtml(e.message)}</div>`;
+            }
+        };
+
+        function qualityClasses(q) {
+            if (q >= 80) return { text: 'text-emerald-600 dark:text-emerald-400', bar: 'bg-emerald-500' };
+            if (q >= 60) return { text: 'text-amber-600 dark:text-amber-400', bar: 'bg-amber-500' };
+            return { text: 'text-red-600 dark:text-red-400', bar: 'bg-red-500' };
+        }
+
+        // compact token formatter: 1_525_301 -> "1.5M", 61_200 -> "61K"
+        function fmtTok(n) {
+            n = n || 0;
+            if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+            if (n >= 1e3) return Math.round(n / 1e3) + 'K';
+            return String(n);
+        }
+
+        function renderAuditDashboard(overlay, d) {
+            const k = d.kpis || {};
+            const sub = overlay.querySelector('#dashSubtitle');
+            sub.innerHTML = d.is_mock
+                ? `<span class="text-amber-600 dark:text-amber-400 font-semibold">Sample data</span> — BigQuery not connected or tables empty`
+                : `${(d.users || []).length} contributor(s) · live from BigQuery analytics`;
+
+            // palette for the KPI icon chips
+            const C = {
+                indigo:  { bg: 'bg-indigo-100 dark:bg-indigo-900/40',  tx: 'text-indigo-600 dark:text-indigo-400' },
+                red:     { bg: 'bg-red-100 dark:bg-red-900/40',        tx: 'text-red-600 dark:text-red-400' },
+                purple:  { bg: 'bg-purple-100 dark:bg-purple-900/40',  tx: 'text-purple-600 dark:text-purple-400' },
+                sky:     { bg: 'bg-sky-100 dark:bg-sky-900/40',        tx: 'text-sky-600 dark:text-sky-400' },
+                amber:   { bg: 'bg-amber-100 dark:bg-amber-900/40',    tx: 'text-amber-600 dark:text-amber-400' },
+                emerald: { bg: 'bg-emerald-100 dark:bg-emerald-900/40', tx: 'text-emerald-600 dark:text-emerald-400' },
+            };
+            const ic = p => `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${p}"/></svg>`;
+            const ICONS = {
+                commits: ic('M7 8l-4 4 4 4m10-8l4 4-4 4M14 4l-4 16'),
+                bypass:  ic('M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z'),
+                tokens:  ic('M13 10V3L4 14h7v7l9-11h-7z'),
+                reviews: ic('M9 12h6m-6 4h4m3 5H7a2 2 0 01-2-2V5a2 2 0 012-2h6l6 6v10a2 2 0 01-2 2z'),
+                finops:  ic('M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8V7m0 9v1m9-5a9 9 0 11-18 0 9 9 0 0118 0z'),
+                quality: ic('M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z'),
+            };
+            const card = (icon, col, label, value, subtext) => `
+                <div class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/40 p-4 flex items-start gap-3 shadow-sm hover:shadow-md transition-shadow">
+                    <div class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${col.bg} ${col.tx}">${icon}</div>
+                    <div class="min-w-0">
+                        <div class="text-[0.62rem] font-bold uppercase tracking-wider text-slate-400">${label}</div>
+                        <div class="text-2xl font-extrabold leading-tight text-slate-900 dark:text-white mt-0.5">${value}</div>
+                        <div class="text-[0.7rem] text-slate-500 dark:text-slate-400 mt-0.5">${subtext || '&nbsp;'}</div>
+                    </div>
+                </div>`;
+            const qc = qualityClasses(k.quality || 0);
+            const qCol = (k.quality || 0) >= 80 ? C.emerald : (k.quality || 0) >= 60 ? C.amber : C.red;
+            const bypassVal = `<span class="${(k.bypasses || 0) > 0 ? 'text-red-600 dark:text-red-400' : ''}">${(k.bypasses || 0).toLocaleString()}</span>`;
+            const qualVal = `<span class="${qc.text}">${k.quality || 0}</span><span class="text-sm text-slate-400 font-bold">/100</span>`;
+            const kpis = `
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    ${card(ICONS.commits, C.indigo, 'Commits', (k.commits || 0).toLocaleString(), 'pushed to branches')}
+                    ${card(ICONS.bypass, C.red, 'Bypasses', bypassVal, `${k.bypass_rate || 0}% of commits`)}
+                    ${card(ICONS.tokens, C.purple, 'Tokens', (k.tokens || 0).toLocaleString(), `${fmtTok(k.tokens_in)} in · ${fmtTok(k.tokens_out)} out · $${(k.cost || 0).toFixed(4)}`)}
+                    ${card(ICONS.reviews, C.sky, 'Reviews', (k.reviews || 0).toLocaleString(), 'files analyzed')}
+                    ${card(ICONS.finops, C.amber, 'FinOps blocks', (k.finops_blocks || 0).toLocaleString(), `${k.secrets || 0} secret hit(s)`)}
+                    ${card(ICONS.quality, qCol, 'Avg quality', qualVal, 'clean-review rate')}
+                </div>`;
+
+            // status distribution bar (percent labels inside wide segments)
+            const sd = d.status_dist || { clean: 0, issues: 0, critical: 0 };
+            const tot = (sd.clean + sd.issues + sd.critical) || 1;
+            const pct = n => (100 * n / tot).toFixed(1);
+            const seg = (n, cls) => n > 0 ? `<div class="${cls} flex items-center justify-center text-[0.6rem] font-bold text-white" style="width:${pct(n)}%">${pct(n) >= 9 ? Math.round(pct(n)) + '%' : ''}</div>` : '';
+            const statusBar = `
+                <div class="mt-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/40 p-4 shadow-sm">
+                    <div class="flex items-center justify-between mb-2.5">
+                        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400">Push status distribution</h4>
+                        <div class="flex items-center gap-3 text-[0.7rem] font-medium text-slate-600 dark:text-slate-300">
+                            <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>Clean ${sd.clean}</span>
+                            <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>Issues ${sd.issues}</span>
+                            <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-red-500"></span>Critical ${sd.critical}</span>
+                        </div>
+                    </div>
+                    <div class="flex w-full h-4 rounded-full overflow-hidden bg-slate-100 dark:bg-slate-700">
+                        ${seg(sd.clean, 'bg-emerald-500')}${seg(sd.issues, 'bg-amber-500')}${seg(sd.critical, 'bg-red-500')}
+                    </div>
+                </div>`;
+
+            // per-user table
+            const rows = (d.users || []).map(u => {
+                const uq = qualityClasses(u.quality || 0);
+                return `<tr class="border-t border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                    <td class="py-3 pl-4 pr-3 text-sm text-slate-800 dark:text-slate-100 font-medium truncate max-w-[240px]">${escHtml(u.user_email)}</td>
+                    <td class="py-3 px-2 text-sm text-center text-slate-700 dark:text-slate-200 font-semibold">${(u.commits || 0).toLocaleString()}</td>
+                    <td class="py-3 px-2 text-sm text-center ${u.bypasses > 0 ? 'text-red-600 dark:text-red-400 font-bold' : 'text-slate-400'}">${(u.bypasses || 0).toLocaleString()}</td>
+                    <td class="py-3 px-2 text-sm text-center text-slate-600 dark:text-slate-300">${(u.tokens || 0).toLocaleString()}</td>
+                    <td class="py-3 px-2 text-sm text-center text-slate-600 dark:text-slate-300">${(u.issues || 0).toLocaleString()}</td>
+                    <td class="py-3 pl-2 pr-4 w-44">
+                        <div class="flex items-center gap-2">
+                            <div class="flex-1 h-2 rounded-full bg-slate-100 dark:bg-slate-700 overflow-hidden"><div class="${uq.bar} h-full rounded-full" style="width:${u.quality || 0}%"></div></div>
+                            <span class="text-xs font-bold ${uq.text} w-7 text-right">${u.quality || 0}</span>
+                        </div>
+                    </td>
+                </tr>`;
+            }).join('');
+            const userTable = `
+                <div class="mt-4">
+                    <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Per-developer breakdown</h4>
+                    <div class="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/40 shadow-sm">
+                        <table class="w-full">
+                            <thead><tr class="text-[0.62rem] uppercase tracking-wider text-slate-400 bg-slate-50 dark:bg-slate-800/60">
+                                <th class="text-left font-bold py-2.5 pl-4">Developer</th>
+                                <th class="font-bold py-2.5 px-2">Commits</th>
+                                <th class="font-bold py-2.5 px-2">Bypasses</th>
+                                <th class="font-bold py-2.5 px-2">Tokens</th>
+                                <th class="font-bold py-2.5 px-2">Issues</th>
+                                <th class="text-left font-bold py-2.5 pl-2">Quality</th>
+                            </tr></thead>
+                            <tbody>${rows || '<tr><td colspan="6" class="py-6 text-center text-slate-400 text-sm">No activity recorded yet.</td></tr>'}</tbody>
+                        </table>
+                    </div>
+                </div>`;
+
+            // recent bypasses (governance focus) — as cards
+            const bps = (d.recent_bypasses || []).map(b => `
+                <div class="flex items-start gap-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/40 p-3">
+                    <span class="text-[0.6rem] font-bold px-2 py-0.5 rounded-md uppercase shrink-0 mt-0.5 ${b.review_status === 'critical' ? 'bg-red-600 text-white' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'}">${escHtml(b.review_status || 'issue')}</span>
+                    <div class="min-w-0">
+                        <div class="text-sm text-slate-800 dark:text-slate-100"><span class="font-semibold">${escHtml(b.user_email)}</span> · <span class="font-mono text-xs">${escHtml(b.filename)}</span> <span class="text-slate-400 text-xs ml-1">${escHtml(b.ts || '')}</span></div>
+                        <div class="text-xs text-slate-500 dark:text-slate-400 italic mt-0.5">“${escHtml(b.dev_comment || '')}”</div>
+                    </div>
+                </div>`).join('');
+            const bypassList = `
+                <div class="mt-4">
+                    <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Recent bypasses — pushed without fixing</h4>
+                    ${bps ? `<div class="space-y-2">${bps}</div>` : '<div class="rounded-2xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-900/20 py-5 text-center text-emerald-600 dark:text-emerald-400 text-sm font-medium">No bypasses recorded — clean governance.</div>'}
+                </div>`;
+
+            overlay.querySelector('#dashBody').innerHTML = kpis + statusBar + userTable + bypassList;
+        }
+
+        // Shared commit POST used by both the single-file modal and the batch push. Reads the
+        // latest editor content + review state from the store and lets the server enforce the gate.
+        window.commitFile = async function(safeId, devComment, commitMessage) {
+            const fileData = window.fileDataStore[safeId];
+            const currentCode = (window.monacoEditors && window.monacoEditors[safeId]) ? window.monacoEditors[safeId].getValue() : fileData.pureRefactoredCode;
+            const isCritical = !!fileData.isCritical;
+            const status = isCritical ? 'critical' : (fileData.statusId || '');
+            const response = await fetch('/commit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    repo: document.getElementById('repo').value,
+                    branch: document.getElementById('branch').value,
+                    filename: fileData.filename,
+                    code: currentCode,
+                    original_code: (fileData.baselineCode != null ? fileData.baselineCode : (fileData.originalCode || '')),
+                    status, is_critical: isCritical,
+                    dev_comment: devComment || '',
+                    commit_message: commitMessage || ''
+                })
+            });
+            const data = await parseJsonResponse(response, 'commit');
+            return { response, data };
+        };
+
+        // Step 1 of push: open a confirmation modal showing the auto-generated review comments.
+        // The developer confirms → we commit. If the file is CRITICAL and unchanged (fixes ignored),
+        // the modal demands a written justification before it will let the push through (bypass).
+        window.pushToGitHub = function(safeId) {
+            const fileData = window.fileDataStore[safeId];
+            const currentCode = (window.monacoEditors && window.monacoEditors[safeId]) ? window.monacoEditors[safeId].getValue() : fileData.pureRefactoredCode;
+            // Compare against the linter-fixed BASELINE shown after review — so an untouched push reads
+            // as "unchanged", while an AI-applied or hand-edited fix reads as "changed".
+            const baselineCode = (fileData.baselineCode != null) ? fileData.baselineCode : (fileData.originalCode || '');
+            const isCritical = !!fileData.isCritical;
+            const status = isCritical ? 'critical' : (fileData.statusId || '');
+            const changesMade = normalizeCodeForCompare(currentCode) !== normalizeCodeForCompare(baselineCode);
+            const comments = fileData.localFixesArray || [];
+            const reviewNote = (fileData.reviewPart || '').trim();
+            const repo = document.getElementById('repo').value;
+            const branch = document.getElementById('branch').value;
+            // Show the justification block UPFRONT when the file still has findings AND the code was
+            // NOT changed (developer is pushing the same unresolved code). A fixed/edited file skips
+            // the upfront block; the server re-check decides and only 409s if it's still unresolved.
+            const unresolved = (status === 'critical' || status === 'issues');
+            const requiresBypass = unresolved && !changesMade;
+
+            // ----- build comment list -----
+            let commentsHtml = comments.length
+                ? comments.map(c => {
+                    const crit = /critical|security|finops|dangerous|mandatory where|error/i.test(c);
+                    return `<li class="flex gap-2 items-start text-sm ${crit ? 'text-red-700 dark:text-red-300' : 'text-slate-700 dark:text-slate-300'}">
+                        <span class="mt-1 w-1.5 h-1.5 rounded-full shrink-0 ${crit ? 'bg-red-500' : 'bg-slate-400'}"></span>
+                        <span>${escHtml(c)}</span></li>`;
+                  }).join('')
+                : `<li class="text-sm text-emerald-600 dark:text-emerald-400">No blocking comments — clean review.</li>`;
+            if (reviewNote) {
+                commentsHtml += `<li class="mt-2 pt-2 border-t border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400 whitespace-pre-wrap">${escHtml(reviewNote)}</li>`;
+            }
+
+            const changeChip = changesMade
+                ? `<span class="text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">Fixes applied</span>`
+                : `<span class="text-[0.65rem] font-bold px-2 py-0.5 rounded-md uppercase bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800">No changes from reviewed version</span>`;
+
+            // Red for critical, amber for (non-critical) issues.
+            const jc = isCritical
+                ? { bd: 'border-red-300 dark:border-red-800', bg: 'bg-red-50 dark:bg-red-900/20', hd: 'text-red-700 dark:text-red-300', sub: 'text-red-600 dark:text-red-400', ta: 'border-red-300 dark:border-red-700 focus:ring-red-400', label: 'Critical findings unresolved — justification required' }
+                : { bd: 'border-amber-300 dark:border-amber-800', bg: 'bg-amber-50 dark:bg-amber-900/20', hd: 'text-amber-700 dark:text-amber-300', sub: 'text-amber-600 dark:text-amber-400', ta: 'border-amber-300 dark:border-amber-700 focus:ring-amber-400', label: 'Unresolved issues — justification required' };
+            const bypassBlock = `
+                <div id="pushBypassBlock" class="${requiresBypass ? '' : 'hidden'} mt-4 rounded-lg border ${jc.bd} ${jc.bg} p-3">
+                    <div class="flex items-center gap-2 ${jc.hd} font-semibold text-sm mb-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                        ${jc.label}
+                    </div>
+                    <p id="pushBypassMsg" class="text-xs ${jc.sub} mb-2">You are pushing a file that still has unresolved findings. Explain why this is acceptable; it will be recorded in the audit trail.</p>
+                    <textarea id="pushDevComment" rows="3" placeholder="Developer justification (required)…" class="w-full text-sm rounded-md border ${jc.ta} bg-white dark:bg-slate-900 p-2 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2"></textarea>
+                </div>`;
+
+            // Editable commit message — pre-filled with a sensible default.
+            const defaultCommitMsg = `Optimized ${fileData.filename} via AI Code Reviewer`;
+            const commitMsgBlock = `
+                <div class="mt-4">
+                    <label class="block text-xs font-semibold uppercase tracking-wide text-slate-400 mb-1">Commit message</label>
+                    <textarea id="pushCommitMsg" rows="2" class="w-full text-sm rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 p-2 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-400">${escHtml(defaultCommitMsg)}</textarea>
+                </div>`;
+
+            const overlay = document.createElement('div');
+            overlay.id = 'pushModalOverlay';
+            overlay.className = 'fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4';
+            overlay.innerHTML = `
+                <div class="w-full max-w-lg bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+                    <div class="px-5 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                        <div>
+                            <h3 class="font-semibold text-slate-900 dark:text-white">Review before push</h3>
+                            <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">${escHtml(fileData.filename)} → <span class="font-mono">${escHtml(branch)}</span></p>
+                        </div>
+                        ${fileData.badgeHtml || ''}
+                    </div>
+                    <div class="px-5 py-4 max-h-[45vh] overflow-y-auto">
+                        <div class="flex items-center gap-2 mb-3">
+                            <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Auto-generated comments</span>
+                            ${changeChip}
+                        </div>
+                        <ul class="space-y-1.5">${commentsHtml}</ul>
+                        ${bypassBlock}
+                        ${commitMsgBlock}
+                    </div>
+                    <div class="px-5 py-4 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-2 bg-slate-50 dark:bg-slate-800/50">
+                        <button id="pushCancelBtn" class="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">Cancel</button>
+                        <button id="pushConfirmBtn" class="px-5 py-2 rounded-lg text-sm font-medium text-white transition-colors ${requiresBypass ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-900 hover:bg-slate-800 dark:bg-slate-700 dark:hover:bg-slate-600'}">${requiresBypass ? 'Bypass &amp; Push' : 'Confirm &amp; Push'}</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(overlay);
+
+            const closeModal = () => overlay.remove();
+            const confirmBtn = overlay.querySelector('#pushConfirmBtn');
+            const cancelBtn = overlay.querySelector('#pushCancelBtn');
+            const getComment = () => { const t = overlay.querySelector('#pushDevComment'); return t ? t.value.trim() : ''; };
+            const syncBtn = () => { if (overlay.querySelector('#pushBypassBlock') && !overlay.querySelector('#pushBypassBlock').classList.contains('hidden')) confirmBtn.disabled = !getComment(); };
+
+            overlay.addEventListener('input', syncBtn);
+            cancelBtn.onclick = closeModal;
+            overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+            syncBtn();
+
+            confirmBtn.onclick = async () => {
+                const devComment = getComment();
+                const commitMsgEl = overlay.querySelector('#pushCommitMsg');
+                const commitMsg = commitMsgEl ? commitMsgEl.value.trim() : '';
+                confirmBtn.disabled = true;
+                confirmBtn.textContent = 'Pushing…';
+                try {
+                    const { response, data } = await window.commitFile(safeId, devComment, commitMsg);
+                    // Server also enforces the gate — if it demands a justification, reveal the box.
+                    if (response.status === 409 && data.requires_bypass) {
+                        const block = overlay.querySelector('#pushBypassBlock');
+                        block.classList.remove('hidden');
+                        overlay.querySelector('#pushBypassMsg').textContent = data.message || '';
+                        confirmBtn.className = 'px-5 py-2 rounded-lg text-sm font-medium text-white bg-red-600 hover:bg-red-700 transition-colors';
+                        confirmBtn.textContent = 'Bypass & Push';
+                        confirmBtn.disabled = true;
+                        overlay.querySelector('#pushDevComment').focus();
+                        return;
+                    }
+                    if (!response.ok) throw new Error(data.error || 'Commit failed');
+                    closeModal();
+                    showToast(data.message, data.bypassed ? 'info' : 'success');
+                } catch (error) {
+                    showToast('Commit Failed: ' + error.message, 'error');
+                    confirmBtn.disabled = false;
+                    const revealed = !overlay.querySelector('#pushBypassBlock').classList.contains('hidden');
+                    confirmBtn.textContent = revealed ? 'Bypass & Push' : 'Confirm & Push';
+                }
+            };
         }
 
         window.validateWithBQ = async function(safeId) {
@@ -1641,6 +1974,7 @@
                 reviewPart: reviewPart,
                 originalCode: fileResult.original_code || '',
                 pureRefactoredCode: pureRefactoredCode,
+                baselineCode: pureRefactoredCode,   // immutable snapshot of the linter-fixed baseline — the push gate compares against this to tell "fixed" from "unchanged"
                 aiOptimizedCode: aiOptimizedCode,
                 bq_metrics: fileResult.bq_metrics || null,
                 schema_explorer: fileResult.schema_explorer || {},
