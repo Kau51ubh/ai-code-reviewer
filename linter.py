@@ -341,6 +341,54 @@ def _mask_sql_strings(content):
     return tmp, lambda s: re.sub(r"\x00(\d+)\x00", lambda m: masked[int(m.group(1))], s)
 
 
+def expand_select_star(content, schema, logs):
+    """Replace `SELECT *` with the explicit column list from the LIVE schema — but ONLY for a
+    single-table SELECT (the FROM is one known table, no JOIN or comma-list). Multi-table
+    `SELECT *` is left alone (and still flagged) because the column origin is ambiguous.
+    Deterministic, no AI/tokens.
+
+    schema: { 'dataset.table': [ {'name':..., 'type':..., 'mode':...}, ... ] }
+    """
+    if not schema:
+        return content
+
+    def _norm(s):
+        return s.replace('${', '').replace('}', '').strip().lower()
+
+    tbl_cols = {}   # normalized 'dataset.table' -> ordered [column names]
+    for key, cols in schema.items():
+        names = [c.get('name') for c in cols if c.get('name')]
+        if names:
+            tbl_cols[_norm(key)] = names
+    if not tbl_cols:
+        return content
+
+    # Match `SELECT * FROM <table> [alias]` where what follows the table is a clause boundary
+    # (a JOIN or a comma would mean multiple tables → the lookahead deliberately excludes them).
+    star_re = re.compile(
+        r'\bSELECT\s+\*\s+FROM\s+'
+        r'(?P<table>\$\{?\w+\}?\.\w+|\w+\.\w+|\w+)'
+        r'(?:\s+(?:AS\s+)?(?P<alias>\w+))?'
+        r'(?=\s*(?:\)|;|WHERE\b|QUALIFY\b|GROUP\b|ORDER\b|LIMIT\b|HAVING\b|UNION\b|EXCEPT\b|INTERSECT\b|ON\b|\Z))',
+        re.IGNORECASE)
+    _KW = {'where', 'qualify', 'group', 'order', 'limit', 'having', 'union', 'except',
+           'intersect', 'on', 'join', 'inner', 'left', 'right', 'full', 'cross', 'using'}
+
+    def _repl(m):
+        table, alias = m.group('table'), m.group('alias')
+        if alias and alias.lower() in _KW:
+            alias = None
+        cols = tbl_cols.get(_norm(table))
+        if not cols:
+            return m.group(0)   # table not in live schema → leave '*' (warning still fires)
+        prefix = (alias + '.') if alias else ''
+        col_list = ', '.join(prefix + c for c in cols)
+        logs.append(f"Fix: Expanded 'SELECT *' to {len(cols)} explicit column(s) from live schema for {table}.")
+        return f'SELECT {col_list} FROM {table}' + (f' {alias}' if alias else '')
+
+    return star_re.sub(_repl, content)
+
+
 def pre_process_sql(filename, content, schema=None):
     logs = []
 
@@ -452,6 +500,10 @@ def pre_process_sql(filename, content, schema=None):
 
     # 4c. Schema-driven deterministic fixes (column spacing, string-literal quoting).
     content = apply_schema_fixes(content, schema, logs)
+    # Expand single-table `SELECT *` into explicit columns from the live schema (before the
+    # per-statement warning below — a successful expansion leaves no '*' to flag).
+    if RULES.on("sql-select-star"):
+        content = expand_select_star(content, schema, logs)
 
     # 5. Process Statement by Statement (parser-based split: ignores ';' in strings/comments)
     statements = split_sql_statements(content)
